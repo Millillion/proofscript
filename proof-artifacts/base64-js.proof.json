@@ -1,0 +1,255 @@
+{
+  "modulePath": "/home/lastmjs/development/proofscript/examples/base64-js.proof.ts",
+  "verifiedAt": "2026-03-14T22:23:57.566Z",
+  "theorems": [
+    {
+      "name": "sextetAtMatchesSpec",
+      "kind": "exhaustive",
+      "implementation": "sextetAt",
+      "specification": "sextetAtSpec",
+      "checkedCases": 64,
+      "bindings": [
+        {
+          "name": "index",
+          "domain": "Sextet"
+        }
+      ]
+    },
+    {
+      "name": "tripletToBase64MatchesSpec",
+      "kind": "composition",
+      "implementation": "tripletToBase64",
+      "specification": "tripletToBase64Spec",
+      "dependencies": [
+        "sextetAtMatchesSpec"
+      ]
+    },
+    {
+      "name": "tripletBytesToBase64MatchesSpec",
+      "kind": "exhaustive",
+      "implementation": "tripletBytesToBase64",
+      "specification": "tripletBytesToBase64Spec",
+      "checkedCases": 16777216,
+      "bindings": [
+        {
+          "name": "b0",
+          "domain": "Byte"
+        },
+        {
+          "name": "b1",
+          "domain": "Byte"
+        },
+        {
+          "name": "b2",
+          "domain": "Byte"
+        }
+      ]
+    },
+    {
+      "name": "singleByteToBase64MatchesSpec",
+      "kind": "exhaustive",
+      "implementation": "singleByteToBase64",
+      "specification": "singleByteToBase64Spec",
+      "checkedCases": 256,
+      "bindings": [
+        {
+          "name": "b0",
+          "domain": "Byte"
+        }
+      ]
+    },
+    {
+      "name": "doubleByteToBase64MatchesSpec",
+      "kind": "exhaustive",
+      "implementation": "doubleByteToBase64",
+      "specification": "doubleByteToBase64Spec",
+      "checkedCases": 65536,
+      "bindings": [
+        {
+          "name": "b0",
+          "domain": "Byte"
+        },
+        {
+          "name": "b1",
+          "domain": "Byte"
+        }
+      ]
+    },
+    {
+      "name": "encodeChunkMatchesSpec",
+      "kind": "loopJoin",
+      "implementation": "encodeChunk",
+      "specification": "encodeChunkSpec",
+      "accumulator": "output",
+      "separator": "",
+      "dependencies": [
+        "tripletBytesToBase64MatchesSpec"
+      ]
+    },
+    {
+      "name": "fromByteArrayMatchesSpec",
+      "kind": "loopJoinTail",
+      "implementation": "fromByteArray",
+      "specification": "fromByteArraySpec",
+      "accumulator": "parts",
+      "separator": "",
+      "loopHelper": "encodeChunk",
+      "tailHelpers": [
+        "singleByteToBase64",
+        "doubleByteToBase64"
+      ],
+      "dependencies": [
+        "encodeChunkMatchesSpec",
+        "singleByteToBase64MatchesSpec",
+        "doubleByteToBase64MatchesSpec"
+      ]
+    },
+    {
+      "name": "charToSextetMatchesSpec",
+      "kind": "exhaustive",
+      "implementation": "charToSextet",
+      "specification": "charToSextetSpec",
+      "checkedCases": 65536,
+      "bindings": [
+        {
+          "name": "char",
+          "domain": "CodeUnitString"
+        }
+      ]
+    },
+    {
+      "name": "decodeTail2MatchesSpec",
+      "kind": "exhaustive",
+      "implementation": "decodeTail2",
+      "specification": "decodeTail2Spec",
+      "checkedCases": 4096,
+      "bindings": [
+        {
+          "name": "s0",
+          "domain": "Sextet"
+        },
+        {
+          "name": "s1",
+          "domain": "Sextet"
+        }
+      ]
+    },
+    {
+      "name": "decodeTail3MatchesSpec",
+      "kind": "exhaustive",
+      "implementation": "decodeTail3",
+      "specification": "decodeTail3Spec",
+      "checkedCases": 262144,
+      "bindings": [
+        {
+          "name": "s0",
+          "domain": "Sextet"
+        },
+        {
+          "name": "s1",
+          "domain": "Sextet"
+        },
+        {
+          "name": "s2",
+          "domain": "Sextet"
+        }
+      ]
+    },
+    {
+      "name": "decodeQuartetMatchesSpec",
+      "kind": "exhaustive",
+      "implementation": "decodeQuartet",
+      "specification": "decodeQuartetSpec",
+      "checkedCases": 16777216,
+      "bindings": [
+        {
+          "name": "s0",
+          "domain": "Sextet"
+        },
+        {
+          "name": "s1",
+          "domain": "Sextet"
+        },
+        {
+          "name": "s2",
+          "domain": "Sextet"
+        },
+        {
+          "name": "s3",
+          "domain": "Sextet"
+        }
+      ]
+    },
+    {
+      "name": "advancePaddingIndexMatchesSpec",
+      "kind": "composition",
+      "implementation": "advancePaddingIndex",
+      "specification": "advancePaddingIndexSpec",
+      "dependencies": []
+    },
+    {
+      "name": "firstPaddingIndexFromMatchesSpec",
+      "kind": "recursiveAdvance",
+      "implementation": "firstPaddingIndexFrom",
+      "specification": "firstPaddingIndexFromSpec",
+      "input": "text",
+      "index": "index",
+      "dependencies": [
+        "advancePaddingIndexMatchesSpec"
+      ]
+    },
+    {
+      "name": "firstPaddingIndexMatchesSpec",
+      "kind": "composition",
+      "implementation": "firstPaddingIndex",
+      "specification": "firstPaddingIndexSpec",
+      "dependencies": [
+        "firstPaddingIndexFromMatchesSpec"
+      ]
+    },
+    {
+      "name": "getLensMatchesSpec",
+      "kind": "composition",
+      "implementation": "getLens",
+      "specification": "getLensSpec",
+      "dependencies": [
+        "firstPaddingIndexMatchesSpec"
+      ]
+    },
+    {
+      "name": "_byteLengthMatchesSpec",
+      "kind": "composition",
+      "implementation": "_byteLength",
+      "specification": "_byteLengthSpec",
+      "dependencies": []
+    },
+    {
+      "name": "byteLengthMatchesSpec",
+      "kind": "composition",
+      "implementation": "byteLength",
+      "specification": "byteLengthSpec",
+      "dependencies": [
+        "getLensMatchesSpec",
+        "_byteLengthMatchesSpec"
+      ]
+    },
+    {
+      "name": "toByteArrayMatchesSpec",
+      "kind": "loopWrite",
+      "implementation": "toByteArray",
+      "specification": "toByteArraySpec",
+      "accumulator": "arr",
+      "indexer": "curByte",
+      "writesPerIteration": 3,
+      "tailWrites": [
+        1,
+        2
+      ],
+      "dependencies": [
+        "getLensMatchesSpec",
+        "_byteLengthMatchesSpec",
+        "charToSextetMatchesSpec"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "proofscript",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "proofscript": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "verify": "node dist/cli.js verify examples/base64-js.proof.ts",
+    "verify:base64": "npm run build && node dist/cli.js verify examples/base64-js.proof.ts",
+    "test": "npm run build && node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.5.2",
+    "typescript": "^5.9.2"
+  }
+}
