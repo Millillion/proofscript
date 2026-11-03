@@ -46,7 +46,7 @@ for (const file of walk(built)) {
   const want = expected(test, file);
   const t0 = Date.now();
   const timeout = Number(yamlField(test, "timeout") ?? 300) * 1000;
-  const r = spawnSync(process.execPath, ["--stack-size=65500", cli, file], { encoding: "utf8", timeout });
+  const r = spawnSync(process.execPath, ["--stack-size=65500", "--max-old-space-size=12288", cli, file], { encoding: "utf8", timeout });
   const ms = Date.now() - t0;
   const got =
     r.status === 0 ? "accept" : r.status === 1 ? "reject" : r.status === 2 || r.signal === "SIGTERM" ? "decline" : `error(${r.status ?? r.signal})`;

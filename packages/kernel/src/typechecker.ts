@@ -137,6 +137,8 @@ export class TypeChecker {
   readonly #inferCache = [new ExprMap<Expr>(), new ExprMap<Expr>()];
   readonly #whnfCoreCache = new ExprMap<Expr>();
   readonly #whnfCache = new ExprMap<Expr>();
+  /** Definition bodies instantiated at specific universe levels, keyed by the constant. */
+  readonly #unfoldCache = new ExprMap<Expr>();
   readonly #success = new PairSet();
   readonly #failure = new PairSet();
 
@@ -499,8 +501,12 @@ export class TypeChecker {
     const info = this.isDelta(e);
     if (info === undefined) return undefined;
     const f = getAppFn(e) as Expr & { kind: "const" };
-    const body = instantiateLevelParams(info.value, info.levelParams, f.levels);
-    return apps(body, getAppArgs(e));
+    let body = f.levels.length === 0 ? info.value : this.#unfoldCache.get(f);
+    if (body === undefined) {
+      body = instantiateLevelParams(info.value, info.levelParams, f.levels);
+      this.#unfoldCache.set(f, body);
+    }
+    return e === f ? body : apps(body, getAppArgs(e));
   }
 
   // ---- Nat and String literals --------------------------------------------------------

@@ -367,15 +367,47 @@ export function lowerLooseBVars(e: Expr, amount: number, start = amount): Expr {
 export function instantiate(e: Expr, subst: readonly Expr[]): Expr {
   const n = subst.length;
   if (n === 0 || e.lbr === 0) return e;
-  return replace(e, (s, d) => {
-    if (s.lbr <= d) return s;
-    if (s.kind === "bvar") {
-      const i = s.idx - d;
-      if (i < n) return liftLooseBVars(subst[i]!, d);
-      return bvar(s.idx - n);
+  // Specialized traversal (this is the kernel's hottest function): closed
+  // subterms are returned as is, and shared open subterms are cached per depth.
+  const caches: (Map<Expr, Expr> | undefined)[] = [];
+  const go = (x: Expr, d: number): Expr => {
+    if (x.lbr <= d) return x;
+    if (x.kind === "bvar") {
+      const i = x.idx - d;
+      return i < n ? liftLooseBVars(subst[i]!, d) : bvar(x.idx - n);
     }
-    return undefined;
-  });
+    let c = caches[d];
+    if (c === undefined) {
+      c = new Map();
+      caches[d] = c;
+    } else {
+      const hit = c.get(x);
+      if (hit !== undefined) return hit;
+    }
+    let r: Expr;
+    switch (x.kind) {
+      case "app":
+        r = app(go(x.fn, d), go(x.arg, d));
+        break;
+      case "lam":
+        r = lam(x.binderName, go(x.binderType, d), go(x.body, d + 1), x.binderInfo);
+        break;
+      case "pi":
+        r = pi(x.binderName, go(x.binderType, d), go(x.body, d + 1), x.binderInfo);
+        break;
+      case "let":
+        r = letE(x.binderName, go(x.binderType, d), go(x.value, d), go(x.body, d + 1));
+        break;
+      case "proj":
+        r = proj(x.typeName, x.idx, go(x.struct, d));
+        break;
+      default:
+        r = x;
+    }
+    c.set(x, r);
+    return r;
+  };
+  return go(e, 0);
 }
 
 /** `instantiate(body, [v])`: the body of a binder applied to `v`. */
