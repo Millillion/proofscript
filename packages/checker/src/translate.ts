@@ -99,6 +99,8 @@ function fnLike(d: ts.Node | undefined): FnLike | undefined {
 interface Scope {
   /** Lean spelling for local symbols (parameters, callback parameters, `const`s, narrowed fields). */
   readonly locals: Map<ts.Symbol, string>;
+  /** Lean types of parameters and local variables (needed to lift loops into helper functions). */
+  readonly types?: Map<ts.Symbol, string>;
   /** For variables narrowed to a constructor: field name -> Lean variable and declared type. */
   readonly narrowed: Map<ts.Symbol, Map<string, { lean: string; type: ts.TypeNode }>>;
 }
@@ -125,6 +127,12 @@ export class Translator {
   readonly #inProgress = new Set<ts.Node>();
   /** Type parameters of the declaration being translated (for nested arrow functions). */
   #currentTypeParams = new Map<ts.Symbol, string>();
+  /** Type-parameter binders of the function being translated (loop helpers repeat them). */
+  #currentTypeBinders: string[] = [];
+  /** Loop helpers generated for each function (innermost first), for postcondition proofs. */
+  readonly #loops = new Map<string, { name: string; args: string[]; binders: string[]; scope: Scope; node: ts.Node }[]>();
+  /** The function being translated (loop helpers are named after it and share its return type). */
+  #currentFunction: { leanName: string; tsName: string; ret: string } | undefined;
   #fresh = 0;
 
   constructor(project: Project) {
@@ -381,9 +389,10 @@ export class Translator {
       // `typeof x` in an index position: the value x itself.
       return this.fail(t, "`typeof x` value indices are not supported by the Lean engine yet");
     }
-    if (ts.isArrayTypeNode(t) || (ts.isTypeOperatorNode(t) && ts.isArrayTypeNode(t.type))) {
-      return this.fail(t, "arrays are not supported in the logic yet (milestone M5)");
+    if (ts.isTypeOperatorNode(t) && t.operator === ts.SyntaxKind.ReadonlyKeyword && ts.isArrayTypeNode(t.type)) {
+      return `(Array ${this.type(t.type.elementType, deps, typeParams)})`;
     }
+    if (ts.isArrayTypeNode(t)) return `(Array ${this.type(t.elementType, deps, typeParams)})`;
     return this.fail(t, `unsupported type ${t.getText()}`);
   }
 
@@ -547,19 +556,35 @@ export class Translator {
     const scope: Scope = { locals: new Map(), narrowed: new Map() };
     const typeParams = new Map<ts.Symbol, string>();
     const binders = this.typeParamBinders(fn.typeParameters, deps, typeParams);
+    const typeBinders = [...binders];
+    const types = new Map<ts.Symbol, string>();
+    (scope as { types?: Map<ts.Symbol, string> }).types = types;
     fn.parameters.forEach((p, i) => {
       if (!ts.isIdentifier(p.name) || p.type === undefined || p.initializer !== undefined || p.dotDotDotToken !== undefined) {
         return this.fail(p, "parameters of functions used in the logic need a plain name and a type");
       }
       const n = this.ident(p.name.text);
       const sym = this.checker.getSymbolAtLocation(p.name);
-      if (sym !== undefined) scope.locals.set(sym, n);
-      binders.push(`(${n} : ${this.type(p.type, deps, typeParams, true)})`);
+      const ty = this.type(p.type, deps, typeParams, true);
+      if (sym !== undefined) {
+        scope.locals.set(sym, n);
+        types.set(sym, ty);
+      }
+      binders.push(`(${n} : ${ty})`);
       binders.push(...this.preconditionBinders(p, n, i, scope, deps, typeParams));
       return undefined;
     });
     const ret = inferredBool ? "Bool" : this.type(fn.type!, deps, typeParams, true);
-    const body = ts.isBlock(fn.body) ? this.statements(fn.body.statements, 0, scope, deps, fn.node) : this.expr(fn.body, "value", scope, deps);
+    const saved = [this.#currentFunction, this.#currentTypeParams, this.#currentTypeBinders] as const;
+    this.#currentFunction = { leanName, tsName: fn.name.text, ret };
+    this.#currentTypeParams = typeParams;
+    this.#currentTypeBinders = typeBinders;
+    let body: string;
+    try {
+      body = ts.isBlock(fn.body) ? this.statements(fn.body.statements, 0, scope, deps, fn.node) : this.expr(fn.body, "value", scope, deps);
+    } finally {
+      [this.#currentFunction, this.#currentTypeParams, this.#currentTypeBinders] = saved;
+    }
     const recursive = deps.has(leanName);
     deps.delete(leanName);
     const source = `def ${leanName}${binders.map((b) => ` ${b}`).join("")} : ${ret} :=\n  ${indent(body, 2)}`;
@@ -578,8 +603,10 @@ export class Translator {
     if (p.type === undefined || !ts.isIntersectionTypeNode(p.type)) return [];
     const out: string[] = [];
     p.type.types.forEach((m, k) => {
-      const prop = this.refinementProp(m, n, scope, deps, typeParams);
-      if (prop !== undefined) out.push(`(pre_${i}_${k} : ${prop} := by first | omega | (simp_all <;> omega) | decide)`);
+      const pd = new Set<string>();
+      const prop = this.refinementProp(m, n, scope, pd, typeParams);
+      for (const d of pd) deps.add(d);
+      if (prop !== undefined) out.push(`(pre_${i}_${k} : ${prop} := ${this.auto(pd)})`);
     });
     return out;
   }
@@ -591,6 +618,9 @@ export class Translator {
     const args = m.typeArguments ?? [];
     const value = (t: ts.TypeNode): string => {
       if (ts.isTypeQueryNode(t) && ts.isIdentifier(t.exprName)) return this.local(t.exprName, scope);
+      if (ts.isTypeQueryNode(t) && ts.isQualifiedName(t.exprName) && t.exprName.right.text === "length" && ts.isIdentifier(t.exprName.left)) {
+        return `(${this.local(t.exprName.left, scope)}).size`;
+      }
       if (ts.isLiteralTypeNode(t) && ts.isNumericLiteral(t.literal)) return t.literal.text;
       return this.type(t, deps, typeParams);
     };
@@ -631,15 +661,49 @@ export class Translator {
     const args = fn.parameters.map((p) => this.local(p.name as ts.Identifier, scope));
     const call = `(${def.leanName}${args.map((a) => ` ${a}`).join("")})`;
     const allArgs = binders.map((b) => /^[({]([^ ]+) :/.exec(b)?.[1]).filter((x): x is string => x !== undefined && !b0IsType(x, binders));
+    const loops = this.#loops.get(def.leanName) ?? [];
+    const loopNames = new Set(loops.map((l) => l.name));
     rt.types.forEach((m, i) => {
       this.#guard(() => {
         const deps = new Set<string>([def.leanName]);
         const prop = this.refinementProp(m, call, scope, deps, typeParams);
         if (prop === undefined) return;
-        const simpSet = [def.leanName, ...this.#defClosure(deps, def.leanName)].join(", ");
-        const tac = recursive
-          ? `fun_induction ${def.leanName}${allArgs.map((a) => ` ${a}`).join("")} <;> simp_all [${simpSet}] <;> (try omega)`
-          : `simp_all [${simpSet}] <;> (try omega)`;
+        // Loop helpers return the function's final result, so the postcondition is
+        // proved for each helper (innermost first) by induction over its iterations,
+        // using its invariants; the function's own proof then uses those lemmas.
+        const lemmas: string[] = [];
+        for (const l of loops) {
+          const ldeps = new Set<string>([l.name]);
+          const lprop = this.refinementProp(m, `(${l.name}${l.args.filter((a) => !a.startsWith("inv_")).map((a) => ` ${a}`).join("")})`, l.scope, ldeps, typeParams);
+          if (lprop === undefined) continue;
+          const unfold = this.#defClosure(ldeps, l.name).filter((d) => !loopNames.has(d));
+          const lname = `${l.name}.post_${i}`;
+          // `fun_induction` unfolds the helper in each case; the helper itself must not be
+          // in the simp set (unfolding a well-founded recursion with simp never stops).
+          const lset = [...unfold, ...lemmas];
+          const ltac = `fun_induction ${l.name}${l.args.map((a) => ` ${a}`).join("")} <;> simp_all${lset.length === 0 ? "" : ` [${lset.join(", ")}]`} <;> (try omega) <;> (try grind)`;
+          const lsource = `@[simp] theorem ${lname}${l.binders.map((b) => ` ${b}`).join("")} :\n    ${lprop} := by\n  ${ltac}`;
+          // A fresh key: one lemma per (loop, postcondition) pair.
+          const lkey = Object.create(null) as ts.Node;
+          this.decls.set(lkey, {
+            kind: "theorem",
+            tsName: `${def.tsName} (postcondition \`${m.getText()}\` at a loop)`,
+            leanName: lname,
+            node: m,
+            source: lsource,
+            deps: new Set([...ldeps, ...lemmas]),
+            obligation: `postcondition of ${def.tsName}, at a loop`,
+          });
+          lemmas.push(lname);
+        }
+        const unfold = [def.leanName, ...this.#defClosure(deps, def.leanName)].filter((d) => !loopNames.has(d));
+        const simpSet = [...unfold, ...lemmas].join(", ");
+        const finish = `simp_all [${simpSet}] <;> (try omega) <;> (try grind)`;
+        let tac = recursive ? `fun_induction ${def.leanName}${allArgs.map((a) => ` ${a}`).join("")} <;> ${finish}` : finish;
+        if (lemmas.length > 0) {
+          // The function's body ends in a call of its outermost loop: use the loop lemma.
+          tac = `first\n    | (simp only [${def.leanName}] <;> first ${[...lemmas].reverse().map((l) => `| apply ${l} `).join("")})\n    | (${tac})`;
+        }
         const leanName = `${def.leanName}.post_${i}`;
         const source = `@[simp] theorem ${leanName}${binders.map((b) => ` ${b}`).join("")} :\n    ${prop} := by\n  ${tac}`;
         const key = m as ts.Node;
@@ -649,11 +713,27 @@ export class Translator {
           leanName,
           node: m,
           source,
-          deps,
+          deps: new Set([...deps, ...lemmas]),
           obligation: `postcondition of ${def.tsName}`,
         });
       });
     });
+  }
+
+  /**
+   * The default tactic for side conditions (preconditions, invariants, subtraction
+   * and division guards): linear arithmetic, then unfolding the predicates the
+   * condition mentions with simplification, arithmetic and `grind`.
+   */
+  auto(propDeps: Iterable<string>): string {
+    const defs = this.#defClosure(propDeps, "").filter((d) => !this.#isLoopHelper(d));
+    const set = defs.length === 0 ? "" : ` [${defs.join(", ")}]`;
+    return `by first | omega | (simp_all${set} <;> omega) | (simp_all${set} <;> grind) | grind | decide`;
+  }
+
+  #isLoopHelper(name: string): boolean {
+    for (const l of this.#loops.values()) if (l.some((x) => x.name === name)) return true;
+    return false;
   }
 
   /** Definitions reachable from `roots` (for unfolding in automatic proofs). */
@@ -673,43 +753,247 @@ export class Translator {
 
 
 
-  /** Translates a statement list that must end in `return` on every path. */
-  statements(sts: readonly ts.Statement[], i: number, scope: Scope, deps: Set<string>, ctx: ts.Node): string {
+  /**
+   * Translates a statement list. `k` says what happens when control falls off the
+   * end: `undefined` means every path must `return`; otherwise `k.next(scope)`
+   * produces the continuation (the rest of the enclosing block, or a loop's next
+   * iteration). `loop` gives the targets of `break` and `continue`.
+   */
+  statements(
+    sts: readonly ts.Statement[],
+    i: number,
+    scope: Scope,
+    deps: Set<string>,
+    ctx: ts.Node,
+    k?: Continuation,
+    loop?: LoopTargets,
+  ): string {
     const st = sts[i];
-    if (st === undefined) return this.fail(ctx, "every path must end in `return`");
+    if (st === undefined) {
+      if (k === undefined) return this.fail(ctx, "every path must end in `return`");
+      return k.next(scope);
+    }
+    const rest = (s: Scope): string => this.statements(sts, i + 1, s, deps, ctx, k, loop);
     if (ts.isReturnStatement(st)) {
       if (st.expression === undefined) return this.fail(st, "`return` needs a value");
       return this.expr(st.expression, "value", scope, deps);
     }
+    if (ts.isBreakStatement(st) || ts.isContinueStatement(st)) {
+      if (loop === undefined || st.label !== undefined) return this.fail(st, "`break`/`continue` (without labels) are only supported directly inside loops");
+      return ts.isBreakStatement(st) ? loop.exit(scope) : loop.next(scope);
+    }
     if (ts.isVariableStatement(st)) {
-      const list = st.declarationList;
-      if (!(list.flags & ts.NodeFlags.Const)) return this.fail(st, "only `const` declarations are supported in functions used in the logic (loops and mutation come later)");
       let out = "";
-      for (const d of list.declarations) {
-        if (!ts.isIdentifier(d.name) || d.initializer === undefined) return this.fail(d, "unsupported declaration");
+      let s2 = scope;
+      for (const d of st.declarationList.declarations) {
+        if (!ts.isIdentifier(d.name) || d.initializer === undefined) return this.fail(d, "declarations need a name and an initial value");
+        const v = this.expr(d.initializer, "value", s2, deps);
         const n = this.freshVar(d.name.text);
-        const v = this.expr(d.initializer, "value", scope, deps);
-        const sym = this.checker.getSymbolAtLocation(d.name);
-        if (sym !== undefined) scope.locals.set(sym, n);
-        out += `let ${n} := ${v}\n`;
+        const sym = this.checker.getSymbolAtLocation(d.name)!;
+        const ty = d.type !== undefined ? this.type(d.type, deps, this.#currentTypeParams) : this.leanTypeOfKind(this.kindOf(d.initializer, s2), d);
+        s2 = withLocal(s2, sym, n, ty);
+        out += `let ${n} : ${ty} := ${v}\n`;
       }
-      return out + this.statements(sts, i + 1, scope, deps, ctx);
+      return out + rest(s2);
+    }
+    if (ts.isExpressionStatement(st)) {
+      const e = st.expression;
+      if (ts.isSatisfiesExpression(e)) return this.assertion(e, scope, deps, rest);
+      const asg = this.assignment(e, scope, deps);
+      if (asg !== undefined) return `let ${asg.name} := ${asg.value}\n${rest(withLocal(scope, asg.sym, asg.name, scope.types?.get(asg.sym)))}`;
+      return this.fail(st, "only assignments to local variables are supported as statements in the logic yet");
     }
     if (ts.isIfStatement(st)) {
-      const rest = (s: Scope) => this.statements(sts, i + 1, s, deps, ctx);
-      const thenBranch = (s: Scope) => this.statements(blockStatements(st.thenStatement), 0, s, deps, st);
-      const elseBranch =
-        st.elseStatement === undefined
-          ? rest
-          : (s: Scope) => this.statements([...blockStatements(st.elseStatement!), ...sts.slice(i + 1)], 0, s, deps, ctx);
-      // `if (…) return a; rest` and `if (…) {…} else {…}`.
-      const thenTerminates = endsInReturn(st.thenStatement);
-      if (!thenTerminates && st.elseStatement === undefined) return this.fail(st, "an `if` without `else` must end in `return`");
+      // Each branch continues with the rest of the block (if it does not return).
+      const cont: Continuation = { next: rest };
+      const thenBranch = (s: Scope) => this.statements(blockStatements(st.thenStatement), 0, s, deps, st, cont, loop);
+      const elseBranch = st.elseStatement === undefined ? rest : (s: Scope) => this.statements(blockStatements(st.elseStatement!), 0, s, deps, st, cont, loop);
       return this.branch(st.expression, thenBranch, elseBranch, scope, deps);
     }
-    if (ts.isSwitchStatement(st)) return this.switchStatement(st, scope, deps);
-    if (ts.isBlock(st)) return this.statements([...st.statements, ...sts.slice(i + 1)], 0, scope, deps, ctx);
+    if (ts.isSwitchStatement(st)) {
+      if (i !== sts.length - 1 && !allClausesReturn(st)) return this.fail(st, "a `switch` must end every case with `return` when statements follow it");
+      return this.switchStatement(st, scope, deps);
+    }
+    if (ts.isBlock(st)) return this.statements(st.statements, 0, scope, deps, st, { next: rest }, loop);
+    if (ts.isWhileStatement(st)) return this.loop(st, undefined, st.expression, undefined, st.statement, scope, deps, rest);
+    if (ts.isForStatement(st)) {
+      if (st.condition === undefined) return this.fail(st, "`for` loops need a condition");
+      // `for (init; cond; update) body` is `init; while (cond) { body; update }`.
+      let s2 = scope;
+      let out = "";
+      if (st.initializer !== undefined) {
+        if (!ts.isVariableDeclarationList(st.initializer)) return this.fail(st.initializer, "unsupported `for` initializer");
+        for (const d of st.initializer.declarations) {
+          if (!ts.isIdentifier(d.name) || d.initializer === undefined) return this.fail(d, "unsupported declaration");
+          const v = this.expr(d.initializer, "value", s2, deps);
+          const n = this.freshVar(d.name.text);
+          const sym = this.checker.getSymbolAtLocation(d.name)!;
+          const ty = d.type !== undefined ? this.type(d.type, deps, this.#currentTypeParams) : this.leanTypeOfKind(this.kindOf(d.initializer, s2), d);
+          s2 = withLocal(s2, sym, n, ty);
+          out += `let ${n} : ${ty} := ${v}\n`;
+        }
+      }
+      return out + this.loop(st, st.initializer, st.condition, st.incrementor, st.statement, s2, deps, rest);
+    }
     return this.fail(st, "this statement is not supported in functions used in the logic yet");
+  }
+
+  /** `e satisfies R;` outside a loop head: an assertion, proved where it stands. */
+  assertion(e: ts.SatisfiesExpression, scope: Scope, deps: Set<string>, rest: (s: Scope) => string): string {
+    const pd = new Set<string>();
+    const props = this.satisfiesProps(e, scope, pd);
+    for (const d of pd) deps.add(d);
+    return props.map((p) => `have _ : ${p} := (${this.auto(pd)})\n`).join("") + rest(scope);
+  }
+
+  /** The propositions a `subject satisfies R` asserts (excluding `Decreases`). */
+  satisfiesProps(e: ts.SatisfiesExpression, scope: Scope, deps: Set<string>): string[] {
+    const subject = this.expr(e.expression, "value", scope, deps);
+    const parts = ts.isIntersectionTypeNode(e.type) ? e.type.types : [e.type];
+    const out: string[] = [];
+    for (const m of parts) {
+      if (ts.isTypeReferenceNode(m) && this.ps(m.typeName) === "Decreases") continue;
+      const p = this.refinementProp(m, subject, scope, deps, this.#currentTypeParams);
+      if (p !== undefined) out.push(p);
+    }
+    return out;
+  }
+
+  /** `x = e`, `x += e`, `x -= e`, `x *= e`, `x++`, `x--`: a new version of a local variable. */
+  assignment(e: ts.Expression, scope: Scope, deps: Set<string>): { sym: ts.Symbol; name: string; value: string } | undefined {
+    const target = (id: ts.Expression): ts.Symbol => {
+      if (!ts.isIdentifier(id)) return this.fail(id, "only local variables can be assigned in the logic yet");
+      const sym = this.checker.getSymbolAtLocation(id);
+      if (sym === undefined || !scope.locals.has(sym)) return this.fail(id, `unknown variable ${id.text}`);
+      return sym;
+    };
+    if (ts.isBinaryExpression(e)) {
+      const op = e.operatorToken.kind;
+      const compound: Partial<Record<ts.SyntaxKind, ts.SyntaxKind>> = {
+        [ts.SyntaxKind.PlusEqualsToken]: ts.SyntaxKind.PlusToken,
+        [ts.SyntaxKind.MinusEqualsToken]: ts.SyntaxKind.MinusToken,
+        [ts.SyntaxKind.AsteriskEqualsToken]: ts.SyntaxKind.AsteriskToken,
+      };
+      if (op === ts.SyntaxKind.EqualsToken) {
+        const sym = target(e.left);
+        return { sym, name: this.freshVar(sym.getName()), value: this.expr(e.right, "value", scope, deps) };
+      }
+      const bop = compound[op];
+      if (bop !== undefined) {
+        const sym = target(e.left);
+        return { sym, name: this.freshVar(sym.getName()), value: this.arith(bop, e.left, e.right, e, scope, deps) };
+      }
+      return undefined;
+    }
+    if ((ts.isPostfixUnaryExpression(e) || ts.isPrefixUnaryExpression(e)) && (e.operator === ts.SyntaxKind.PlusPlusToken || e.operator === ts.SyntaxKind.MinusMinusToken)) {
+      const sym = target(e.operand);
+      const one = ts.factory.createNumericLiteral(1);
+      const bop = e.operator === ts.SyntaxKind.PlusPlusToken ? ts.SyntaxKind.PlusToken : ts.SyntaxKind.MinusToken;
+      return { sym, name: this.freshVar(sym.getName()), value: this.arith(bop, e.operand, one, e, scope, deps) };
+    }
+    return undefined;
+  }
+
+  /** Lean type for a local whose type TypeScript inferred. */
+  leanTypeOfKind(k: ReturnType<Translator["kindOf"]>, node: ts.Node): string {
+    switch (k) {
+      case "nat":
+      case "literal":
+        return "Nat";
+      case "int":
+      case "bigint":
+        return "Int";
+      case "boolean":
+        return "Bool";
+      case "string":
+        return "String";
+      default:
+        return this.fail(node, "annotate this variable's type (`nat`, `int`, …) so its meaning in the logic is clear");
+    }
+  }
+
+  // ---- Loops ------------------------------------------------------------------------------
+
+  /**
+   * A loop becomes a recursive helper function whose parameters are the enclosing
+   * function's parameters and the live local variables. Leading `x satisfies R;`
+   * statements in the body are loop invariants: they become preconditions of the
+   * helper, proved at loop entry and at every iteration. `e satisfies Decreases;`
+   * gives the termination measure. The code after the loop is the exit branch.
+   */
+  loop(
+    node: ts.Node,
+    _init: ts.ForInitializer | undefined,
+    cond: ts.Expression,
+    update: ts.Expression | undefined,
+    bodySt: ts.Statement,
+    scope: Scope,
+    deps: Set<string>,
+    after: (s: Scope) => string,
+  ): string {
+    if (scope.narrowed.size > 0) return this.fail(node, "loops inside a branch on a discriminated union are not supported yet");
+    const fn = this.#currentFunction;
+    if (fn === undefined) return this.fail(node, "loops are only supported inside functions");
+    const name = `${fn.leanName}.loop_${++this.#fresh}`;
+    // The helper's parameters: every local in scope, with its Lean type.
+    const syms = [...scope.locals.keys()];
+    const params = syms.map((sym) => {
+      const ty = scope.types?.get(sym);
+      if (ty === undefined) return this.fail(node, `the type of \`${sym.getName()}\` must be known to use it in a loop`);
+      return { sym, ty, name: this.freshVar(sym.getName()) };
+    });
+    const inner: Scope = {
+      locals: new Map(params.map((p) => [p.sym, p.name])),
+      narrowed: new Map(),
+      types: new Map(params.map((p) => [p.sym, p.ty])),
+    };
+    const body = blockStatements(bodySt);
+    // Leading `satisfies` statements: invariants and the termination measure.
+    let j = 0;
+    const invariants: { p: string; pd: Set<string> }[] = [];
+    let measure: string | undefined;
+    for (; j < body.length; j++) {
+      const b = body[j]!;
+      if (!ts.isExpressionStatement(b) || !ts.isSatisfiesExpression(b.expression)) break;
+      const se = b.expression;
+      const parts = ts.isIntersectionTypeNode(se.type) ? se.type.types : [se.type];
+      if (parts.some((m) => ts.isTypeReferenceNode(m) && this.ps(m.typeName) === "Decreases")) {
+        measure = this.expr(se.expression, "value", inner, deps);
+      }
+      const pd = new Set<string>();
+      for (const p of this.satisfiesProps(se, inner, pd)) invariants.push({ p, pd });
+      for (const d of pd) deps.add(d);
+    }
+    const invBinders = invariants.map(({ p, pd }, idx) => `(inv_${idx} : ${p} := ${this.auto(pd)})`);
+    const call = (s: Scope): string => `(${name}${params.map((p) => ` ${s.locals.get(p.sym)!}`).join("")})`;
+    const next = (s: Scope): string => {
+      if (update === undefined) return call(s);
+      const asg = this.assignment(update, s, deps);
+      if (asg === undefined) return this.fail(update, "unsupported loop update");
+      return `let ${asg.name} := ${asg.value}\n${call(withLocal(s, asg.sym, asg.name, s.types?.get(asg.sym)))}`;
+    };
+    const targets: LoopTargets = { next, exit: after };
+    // The exit branch (`after`) is translated in the helper's own scope.
+    const helperBody = this.branch(
+      cond,
+      (s) => this.statements(body, j, s, deps, bodySt, { next }, targets),
+      (s) => after(s),
+      inner,
+      deps,
+    );
+    const helperDeps = new Set(deps);
+    helperDeps.delete(name);
+    const tps = this.#currentTypeBinders;
+    const binders = [...tps, ...params.map((p) => `(${p.name} : ${p.ty})`), ...invBinders];
+    const term = measure === undefined ? "" : `\ntermination_by ${measure}`;
+    const source = `def ${name}${binders.map((b) => ` ${b}`).join("")} : ${fn.ret} :=\n  ${indent(helperBody, 2)}${term}`;
+    const key = node;
+    this.decls.set(key, { kind: "def", tsName: `${fn.tsName} (loop)`, leanName: name, node, source, deps: helperDeps });
+    const list = this.#loops.get(fn.leanName) ?? [];
+    list.push({ name, args: [...params.map((p) => p.name), ...invariants.map((_, idx) => `inv_${idx}`)], binders, scope: inner, node });
+    this.#loops.set(fn.leanName, list);
+    deps.add(name);
+    return call(scope);
   }
 
   switchStatement(st: ts.SwitchStatement, scope: Scope, deps: Set<string>): string {
@@ -812,6 +1096,11 @@ export class Translator {
 
   // ---- Expressions ---------------------------------------------------------------------------
 
+  isArrayExpr(e: ts.Expression): boolean {
+    const t = this.checker.getTypeAtLocation(e);
+    return this.checker.isArrayType(t) || this.checker.isArrayType(this.checker.getApparentType(t));
+  }
+
   isBooleanType(e: ts.Expression): boolean {
     return (this.checker.getTypeAtLocation(e).flags & ts.TypeFlags.BooleanLike) !== 0;
   }
@@ -823,6 +1112,9 @@ export class Translator {
       return e.text;
     }
     if (ts.isBigIntLiteral(e)) return `(${e.text.slice(0, -1)} : Int)`;
+    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.MinusToken && ts.isNumericLiteral(e.operand) && /^[0-9]+$/.test(e.operand.text)) {
+      return `(-${e.operand.text} : Int)`;
+    }
     if (e.kind === ts.SyntaxKind.TrueKeyword) return mode === "prop" ? "True" : "true";
     if (e.kind === ts.SyntaxKind.FalseKeyword) return mode === "prop" ? "False" : "false";
     if (ts.isStringLiteral(e)) return JSON.stringify(e.text);
@@ -839,6 +1131,18 @@ export class Translator {
         return ln;
       }
       return this.fail(e, `unknown name ${e.text}`);
+    }
+    if (ts.isPropertyAccessExpression(e) && e.name.text === "length" && this.isArrayExpr(e.expression)) {
+      return `(${this.expr(e.expression, "value", scope, deps)}).size`;
+    }
+    if (ts.isElementAccessExpression(e)) {
+      if (!this.isArrayExpr(e.expression)) return this.fail(e, "indexing is only supported on arrays in the logic yet");
+      const ik = this.kindOf(e.argumentExpression, scope);
+      if (ik !== "nat" && ik !== "literal") return this.fail(e.argumentExpression, "array indices in the logic must be `nat` (a negative index reads `undefined` in JavaScript)");
+      // Lean's `a[i]` must prove `i < a.size` from the context, exactly the condition
+      // under which JavaScript's `a[i]` is an element rather than `undefined`.
+      const r = `${this.expr(e.expression, "value", scope, deps)}[${this.expr(e.argumentExpression, "value", scope, deps)}]`;
+      return this.coerceProp(e, r, mode);
     }
     if (ts.isPropertyAccessExpression(e)) {
       if (ts.isIdentifier(e.expression)) {
@@ -916,22 +1220,32 @@ export class Translator {
       }
       case ts.SyntaxKind.PlusToken:
       case ts.SyntaxKind.AsteriskToken:
-      case ts.SyntaxKind.MinusToken: {
-        this.requireIntegerType(e, scope);
-        const op = k === ts.SyntaxKind.PlusToken ? "+" : k === ts.SyntaxKind.AsteriskToken ? "*" : "-";
-        const l = sub(e.left, "value");
-        const r = sub(e.right, "value");
-        if (op === "-" && this.isNatExpr(e.left, scope)) {
-          // In JavaScript the result could be negative; in Lean, Nat subtraction would
-          // silently truncate. So the subtraction is only allowed where it is proved
-          // not to go below zero.
-          return `(have _ : ${r} ≤ ${l} := (by first | omega | (simp_all <;> omega) | decide); ${l} - ${r})`;
-        }
-        return `(${l} ${op} ${r})`;
-      }
+      case ts.SyntaxKind.MinusToken:
+        return this.arith(k, e.left, e.right, e, scope, deps);
       default:
         return this.fail(e.operatorToken, `operator ${e.operatorToken.getText()} is not supported in the logic yet`);
     }
+  }
+
+  /** Integer arithmetic with JavaScript's meaning on safe integers. */
+  arith(k: ts.SyntaxKind, left: ts.Expression, right: ts.Expression, at: ts.Node, scope: Scope, deps: Set<string>): string {
+    for (const side of [left, right]) {
+      const kk = this.kindOf(side, scope);
+      if (kk !== "nat" && kk !== "int" && kk !== "bigint" && kk !== "literal") {
+        return this.fail(side, "arithmetic in the logic needs `nat`, `int` or `bigint` operands (`number` is IEEE-754 floating point)");
+      }
+    }
+    void at;
+    const op = k === ts.SyntaxKind.PlusToken ? "+" : k === ts.SyntaxKind.AsteriskToken ? "*" : "-";
+    const l = this.expr(left, "value", scope, deps);
+    const r = this.expr(right, "value", scope, deps);
+    if (op === "-" && this.isNatExpr(left, scope)) {
+      // In JavaScript the result could be negative; in Lean, Nat subtraction would
+      // silently truncate. So the subtraction is only allowed where it is proved
+      // not to go below zero.
+      return `(have _ : ${r} ≤ ${l} := (by first | omega | (simp_all <;> omega) | grind | decide); ${l} - ${r})`;
+    }
+    return `(${l} ${op} ${r})`;
   }
 
   isNatExpr(e: ts.Expression, scope: Scope): boolean {
@@ -975,6 +1289,24 @@ export class Translator {
       if (d !== undefined && (ts.isParameter(d) || ts.isVariableDeclaration(d))) return fromTypeNode(d.type ?? undefined) !== "other" ? fromTypeNode(d.type) : d.initializer !== undefined && ts.isVariableDeclaration(d) ? this.kindOf(d.initializer, scope) : "other";
       return "other";
     }
+    if (ts.isPropertyAccessExpression(e) && e.name.text === "length" && this.isArrayExpr(e.expression)) return "nat";
+    if (ts.isElementAccessExpression(e) && ts.isIdentifier(e.expression)) {
+      const d = this.declOf(e.expression);
+      let t = d !== undefined && (ts.isParameter(d) || ts.isVariableDeclaration(d)) ? d.type : undefined;
+      if (t !== undefined && ts.isIntersectionTypeNode(t)) t = t.types.find((m) => ts.isArrayTypeNode(m) || ts.isTypeOperatorNode(m));
+      if (t !== undefined && ts.isTypeOperatorNode(t)) t = t.type;
+      return t !== undefined && ts.isArrayTypeNode(t) ? fromTypeNode(t.elementType) : "other";
+    }
+    if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression)) {
+      const recv = e.expression.expression;
+      if (ts.isIdentifier(recv) && recv.text === "Math" && e.expression.name.text === "floor") {
+        const a = e.arguments[0];
+        const inner = a !== undefined && ts.isParenthesizedExpression(a) ? a.expression : a;
+        return inner !== undefined && ts.isBinaryExpression(inner) ? this.kindOf(inner.left, scope) : "other";
+      }
+      if (this.isArrayExpr(recv)) return "boolean";
+    }
+    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.MinusToken && ts.isNumericLiteral(e.operand)) return "int";
     if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.expression)) {
       const sym = this.checker.getSymbolAtLocation(e.expression);
       const f = sym === undefined ? undefined : scope.narrowed.get(sym)?.get(e.name.text);
@@ -1077,6 +1409,50 @@ export class Translator {
         }
         default:
           return this.fail(e, `ProofScript's ${ps} cannot be used here`);
+      }
+    }
+    if (ts.isPropertyAccessExpression(e.expression)) {
+      const recv = e.expression.expression;
+      const m = e.expression.name.text;
+      if (ts.isIdentifier(recv) && recv.text === "Math" && m === "floor" && args.length === 1) {
+        const a = args[0]!;
+        const inner = ts.isParenthesizedExpression(a) ? a.expression : a;
+        if (ts.isBinaryExpression(inner) && inner.operatorToken.kind === ts.SyntaxKind.SlashToken && this.isNatExpr(inner.left, scope) && (this.isNatExpr(inner.right, scope) || ts.isNumericLiteral(inner.right))) {
+          // On non-negative integers, Math.floor(a / b) is exact floor division (b = 0 gives Infinity in JS: excluded).
+          const b = this.expr(inner.right, "value", scope, deps);
+          return `(have _ : ${b} > 0 := (by first | omega | (simp_all <;> omega) | grind | decide); ${this.expr(inner.left, "value", scope, deps)} / ${b})`;
+        }
+        return this.fail(e, "`Math.floor` is supported only as `Math.floor(a / b)` on `nat` values");
+      }
+      if (this.isArrayExpr(recv)) {
+        const a = this.expr(recv, "value", scope, deps);
+        const lam = (f: ts.Expression | undefined): string => {
+          if (f === undefined || !ts.isArrowFunction(f) || f.parameters.length !== 1 || ts.isBlock(f.body)) {
+            return this.fail(e, `\`${m}\` takes an arrow function \`(x) => …\` with one parameter and an expression body`);
+          }
+          const p = f.parameters[0]!;
+          if (!ts.isIdentifier(p.name)) return this.fail(p, "expected a name");
+          const n = this.freshVar(p.name.text);
+          const locals = new Map(scope.locals);
+          const sym = this.checker.getSymbolAtLocation(p.name);
+          if (sym !== undefined) locals.set(sym, n);
+          return `(fun ${n} => ${this.expr(f.body as ts.Expression, "value", { ...scope, locals }, deps)})`;
+        };
+        let r: string;
+        switch (m) {
+          case "includes":
+            r = `(${a}.contains ${this.expr(args[0]!, "value", scope, deps)})`;
+            break;
+          case "every":
+            r = `(${a}.all ${lam(args[0])})`;
+            break;
+          case "some":
+            r = `(${a}.any ${lam(args[0])})`;
+            break;
+          default:
+            return this.fail(e, `array method \`${m}\` is not supported in the logic yet`);
+        }
+        return this.coerceProp(e, r, mode);
       }
     }
     if (!ts.isIdentifier(e.expression)) return this.fail(e.expression, "only calls to named functions are supported in the logic yet");
@@ -1291,6 +1667,29 @@ export class Translator {
 /** Whether a binder name belongs to an implicit `{T : Type}`/`{n : Nat}` binder (not passed explicitly). */
 function b0IsType(name: string, binders: readonly string[]): boolean {
   return binders.some((b) => b.startsWith(`{${name} :`));
+}
+
+interface Continuation {
+  readonly next: (s: Scope) => string;
+}
+interface LoopTargets {
+  readonly next: (s: Scope) => string;
+  readonly exit: (s: Scope) => string;
+}
+
+function withLocal(scope: Scope, sym: ts.Symbol, name: string, type: string | undefined): Scope {
+  const locals = new Map(scope.locals);
+  locals.set(sym, name);
+  const types = new Map(scope.types ?? []);
+  if (type !== undefined) types.set(sym, type);
+  return { locals, narrowed: scope.narrowed, types };
+}
+
+function allClausesReturn(st: ts.SwitchStatement): boolean {
+  return st.caseBlock.clauses.every((c) => {
+    const last = c.statements[c.statements.length - 1];
+    return last !== undefined && endsInReturn(last);
+  });
 }
 
 function blockStatements(s: ts.Statement): readonly ts.Statement[] {

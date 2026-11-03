@@ -55,8 +55,7 @@ export function checkProject(project: Project, workDir: string): CheckResult {
       if (owner === undefined) continue;
       failed.add(owner);
       const p = pos(owner);
-      const what = owner.kind === "theorem" ? "proof failed" : `could not translate ${owner.tsName} to the logic`;
-      diagnostics.push({ ...p, message: `${what}: ${m.text}` });
+      diagnostics.push({ ...p, message: explain(owner, m.text) });
     }
     return {
       diagnostics,
@@ -93,6 +92,24 @@ export function checkProject(project: Project, workDir: string): CheckResult {
     return { ...base(t, pos), status: axioms.includes("sorry") ? ("admitted" as const) : ("verified" as const), axioms, reflected };
   });
   return { diagnostics, unverified, theorems: results, declarationsChecked: count };
+}
+
+/** Plain-language explanations of the Lean failures ProofScript's translation can produce. */
+export function explain(owner: GeneratedDecl, text: string): string {
+  const detail = text.split("\n").slice(0, 12).join("\n");
+  const m = /could not synthesize default value for parameter '(inv|pre)_(\d+)/.exec(text);
+  if (m !== null) {
+    return m[1] === "inv"
+      ? `loop invariant #${Number(m[2]) + 1} of ${owner.tsName} may not hold (on entry to the loop, or after an iteration)`
+      : `a precondition may not hold at a call in ${owner.tsName}`;
+  }
+  if (/failed to prove index is valid/.test(text)) return `an array index in ${owner.tsName} may be out of bounds (JavaScript would read \`undefined\`)`;
+  if (/fail to show termination|failed to prove termination/.test(text)) {
+    return `${owner.tsName} may not terminate: give the loop a measure with \`e satisfies Decreases;\` that decreases on every iteration`;
+  }
+  if (/Expected type must not contain free variables/.test(text)) return `a side condition in ${owner.tsName} could not be proved`;
+  if (owner.kind === "theorem") return `proof failed: ${detail}`;
+  return `could not translate ${owner.tsName} to the logic: ${detail}`;
 }
 
 function base(t: GeneratedDecl, pos: (d: GeneratedDecl) => Diagnostic) {

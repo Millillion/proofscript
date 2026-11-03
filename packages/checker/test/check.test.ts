@@ -64,3 +64,18 @@ test("bad-post: a wrong postcondition does not verify", { skip: !hasLean }, () =
   assert.equal(r.theorems.length, 1);
   assert.equal(r.theorems[0]!.status, "failed");
 });
+
+test("good-loop: while and for loops with invariants, termination and in-bounds indexing", { skip: !hasLean }, () => {
+  const r = run("good-loop");
+  assert.deepEqual(r.diagnostics, []);
+  assert.ok(r.theorems.length >= 2);
+  assert.ok(r.theorems.every((t) => t.status === "verified"));
+});
+
+for (const name of ["bad-loop-invariant", "bad-loop-bounds", "bad-loop-termination"]) {
+  test(`${name}: rejected`, { skip: !hasLean }, () => {
+    const r = run(name);
+    assert.ok(r.diagnostics.length > 0, "a diagnostic is reported");
+    assert.ok(r.theorems.every((t) => t.status !== "verified"), "nothing is reported as verified");
+  });
+}
