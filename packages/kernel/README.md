@@ -27,13 +27,10 @@ ProofScript's own elaborator will produce declarations in the same form.
 
 ## What is derived, not trusted
 
-Data an export supplies that the kernel can derive is re-derived and compared:
+Data an export supplies that the kernel can derive is never trusted:
 
-- inductive metadata (`isRec`, `isReflexive`, `numNested`, …);
-- recursor types and computation rules;
-- the quotient constants.
-
-A forged recursor or quotient is a rejection, not a new axiom.
+- inductive metadata (`isRec`, `isReflexive`, `numNested`, …), recursor types and computation rules are re-derived and compared; a forged recursor is a rejection, not a new axiom;
+- the quotient constants are installed by the kernel itself (as Lean does); the types an export claims for them are ignored.
 
 ## Deliberate differences from Lean's C++ kernel
 

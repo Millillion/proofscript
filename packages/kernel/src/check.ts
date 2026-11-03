@@ -129,11 +129,11 @@ export class Kernel {
     checkEqType(this.env);
     const expected = quotConstants();
     if (infos.length !== expected.length) fail("malformed quotient declaration");
+    // Like Lean, the kernel installs its own quotient constants; the types an
+    // export claims for them are redundant and ignored (never trusted).
     for (const e of expected) {
       const got = infos.find((i) => i.name === e.name);
-      if (got === undefined || got.quotKind !== e.quotKind || !sameNames(got.levelParams, e.levelParams) || !exprEq(got.type, e.type)) {
-        fail(`quotient constant ${nameToString(e.name)} does not have the expected type`);
-      }
+      if (got === undefined || got.quotKind !== e.quotKind) fail(`malformed quotient declaration: missing ${nameToString(e.name)}`);
       if (this.env.has(e.name)) fail(`${nameToString(e.name)} has already been declared`);
     }
     for (const e of expected) this.env.add(e);
