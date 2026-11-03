@@ -38,7 +38,8 @@ The kernel (`packages/kernel`) is the only trusted component.
 
 ## Known gaps
 
-- Arrays, loops, mutation, classes, async: not yet in the logic (M5–M6).
+- **Integer overflow in running code is not yet checked.** Reflected functions treat `nat`/`int` arithmetic as exact. In JavaScript it is exact only up to 2⁵³ − 1. Decision D17 calls for a no-overflow obligation on every runtime `+`, `-`, `*`; until that lands, results trust that no intermediate value exceeds 2⁵³ − 1 (part of the `reflection` entry in each footprint).
+- Mutating arrays or objects, classes, async: not yet in the logic (M5–M6).
 - Preconditions are enforced at calls inside verified code; calls from unverified code are not yet reported (the "boundary preconditions" audit).
 - Proving requires Lean (D30); its replacement by Lean in WebAssembly is planned (D31).
 - Certificate caching (checking without Lean) is not implemented yet; it needs the statement-binding check described in D30's notes.
