@@ -10,8 +10,8 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
-    "test": "node --test \"packages/*/test/**/*.test.ts\"",
-    "test:coverage": "node --test --experimental-test-coverage \"packages/*/test/**/*.test.ts\"",
+    "test": "node --stack-size=65500 --test \"packages/*/test/**/*.test.ts\"",
+    "test:coverage": "node --stack-size=65500 --test --experimental-test-coverage \"packages/*/test/**/*.test.ts\"",
     "check": "npm run typecheck && npm test"
   },
   "devDependencies": {

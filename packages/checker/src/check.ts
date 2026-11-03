@@ -11,7 +11,8 @@ export interface TheoremResult {
   readonly file: string;
   readonly line: number;
   readonly leanName: string;
-  readonly status: "verified" | "failed";
+  /** `admitted`: checked, but depends on `sorry`. */
+  readonly status: "verified" | "admitted" | "failed";
   /** Axioms the proof depends on (its trust footprint). */
   readonly axioms: string[];
 }
@@ -84,7 +85,8 @@ export function checkProject(project: Project, workDir: string): CheckResult {
       diagnostics.push({ ...pos(t), message: `internal error: ${t.leanName} missing from the export` });
       return { ...base(t, pos), status: "failed" as const, axioms: [] };
     }
-    return { ...base(t, pos), status: "verified" as const, axioms: axiomsOf(kernel, c) };
+    const axioms = axiomsOf(kernel, c);
+    return { ...base(t, pos), status: axioms.includes("sorry") ? ("admitted" as const) : ("verified" as const), axioms };
   });
   return { diagnostics, unverified, theorems: results, declarationsChecked: count };
 }
@@ -131,7 +133,7 @@ export function formatResult(r: CheckResult, rootDir: string): string {
   for (const d of r.unverified) lines.push(`${relative(rootDir, d.file)}:${d.line}:${d.column}: warning: ${d.message}`);
   for (const t of r.theorems) {
     const extra = t.axioms.filter((a) => !STANDARD_AXIOMS.has(a));
-    const mark = t.status === "verified" ? (extra.length > 0 ? "⚠" : "✓") : "✗";
+    const mark = t.status === "verified" ? (extra.length > 0 ? "⚠" : "✓") : t.status === "admitted" ? "⚠" : "✗";
     const ax = t.axioms.length === 0 ? "no axioms" : `axioms: ${t.axioms.join(", ")}`;
     lines.push(`${mark} ${t.tsName} (${relative(rootDir, t.file)}:${t.line}) — ${t.status}, ${ax}`);
   }

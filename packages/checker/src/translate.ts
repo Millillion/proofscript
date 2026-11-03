@@ -629,7 +629,18 @@ export class Translator {
           if (f === undefined) return this.fail(e, `field ${e.name.text} does not exist on this constructor`);
           return this.coerceProp(e, f.lean, mode);
         }
-        if (e.name.text !== "tag" && this.shapeOfType(this.checker.getTypeAtLocation(e.expression)) !== undefined) {
+        const shape = this.shapeOfType(this.checker.getTypeAtLocation(e.expression));
+        if (shape !== undefined && e.name.text !== "tag") {
+          // A single-constructor type (a structure): fields are always available.
+          if (shape.ctors.length === 1) {
+            const c = shape.ctors[0]!;
+            const idx = c.fields.findIndex((f) => f.name === e.name.text);
+            if (idx < 0) return this.fail(e, `no field ${e.name.text}`);
+            deps.add(shape.leanName);
+            const vars = c.fields.map((f) => this.freshVar(f.name));
+            const r = `(match ${this.local(e.expression, scope)} with | .${this.ident(c.tag)}${vars.map((v) => ` ${v}`).join("")} => ${vars[idx]})`;
+            return this.coerceProp(e, r, mode);
+          }
           return this.fail(e, `\`${e.getText()}\` needs a check of \`${e.expression.text}.tag\` first`);
         }
       }
@@ -808,6 +819,10 @@ export class Translator {
           return mode === "prop"
             ? `(${this.expr(args[0]!, "prop", scope, deps)} → ${this.expr(args[1]!, "prop", scope, deps)})`
             : `(!${this.expr(args[0]!, "value", scope, deps)} || ${this.expr(args[1]!, "value", scope, deps)})`;
+        case "iff":
+          return mode === "prop"
+            ? `(${this.expr(args[0]!, "prop", scope, deps)} ↔ ${this.expr(args[1]!, "prop", scope, deps)})`
+            : `(${this.expr(args[0]!, "value", scope, deps)} == ${this.expr(args[1]!, "value", scope, deps)})`;
         case "eq":
           if (mode !== "prop") return this.fail(e, "`eq` is a proposition, not a boolean");
           return `(${this.expr(args[0]!, "value", scope, deps)} = ${this.expr(args[1]!, "value", scope, deps)})`;
@@ -927,6 +942,8 @@ export class Translator {
         return `exact ${this.term(args[0]!, scope, deps)}`;
       case "apply":
         return `apply ${this.term(args[0]!, scope, deps)}`;
+      case "unfold":
+        return `unfold ${args.map((a) => this.lemmaRef(a, scope, deps)).join(" ")}`;
       case "rw":
         return `rw [${args.map((a) => this.lemmaRef(a, scope, deps)).join(", ")}]`;
       case "allGoals":
