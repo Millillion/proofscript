@@ -133,18 +133,24 @@ export function append<T>(xs: List<T>, ys: List<T>): List<T> & Is<typeof appendL
 export function length_append<T>(xs: List<T>, ys: List<T>): Proof & Simp {
   return prove(
     length(append(xs, ys)) === length(xs) + length(ys),
-    by(induction(xs), simp(length, append)),
+    by(induction(xs, {
+      nil: () => simp(length, append),
+      cons: (_head, _tail, ih) => by(simp(length, append, ih), omega),
+    })),
   );
 }
 
-// The same fact as a term proof: induction is recursion.
-export function length_append_term<T>(xs: List<T>, ys: List<T>): Proof {
-  return prove(length(append(xs, ys)) === length(xs) + length(ys), () =>
+// A term proof: induction is recursion, case analysis is `?:`.
+// `eq` is structural equality (`===` on objects compares identity).
+export function append_nil<T>(xs: List<T>): Proof {
+  return prove(eq(append(xs, { tag: "nil" }), xs), () =>
     xs.tag === "nil"
       ? rfl
-      : congrArg((n: nat) => 1 + n, length_append_term(xs.tail, ys)));
+      : congrArg((r: List<T>): List<T> => ({ tag: "cons", head: xs.head, tail: r }), append_nil(xs.tail)));
 }
 ```
+
+Both are checked end to end by `proofscript check` (see [`typescript-only/`](typescript-only/)). Tactic semantics are exactly Lean's: `by(t1, t2)` runs `t1` then `t2` on the first goal, so `induction` with per-case callbacks is the usual shape.
 
 At runtime, theorems are never called, so no ProofScript code ever executes. A module containing theorems imports the `proofscript` package, which is tiny, inert and side-effect free, so bundlers drop it along with the unreferenced theorem functions. Run as plain TypeScript, a theorem is a **property test**: `length_append(a, b)` evaluates the statement on those inputs and throws if it's false. ProofScript proves it for all inputs.
 
@@ -162,11 +168,12 @@ export declare namespace Even {
   function step<k extends nat>(h: Even<k>): Even<Plus<k, 2>>;
 }
 
-// When the claim is a type, it is the return type.
-export function even_add<a extends nat, b extends nat>(ha: Even<a>, hb: Even<b>): Even<Plus<a, b>> {
+// When the claim is a type, it is the return type. `b + 0` and `b + (k + 2)`
+// compute to `b` and `(b + k) + 2`, so constructors close both cases.
+export function even_add<a extends nat, b extends nat>(ha: Even<a>, hb: Even<b>): Even<Plus<b, a>> {
   return by(induction(ha, {
     zero: () => exact(hb),
-    step: (_h, ih) => by(simp(), exact(Even.step(ih))),
+    step: (_h, ih) => exact(Even.step(ih)),
   }));
 }
 ```

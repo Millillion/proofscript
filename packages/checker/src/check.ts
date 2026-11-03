@@ -1,0 +1,143 @@
+// `proofscript check`: translate, prove with Lean (untrusted), check with the kernel.
+
+import { join, relative } from "node:path";
+import { type ConstantInfo, type Expr, Kernel, KernelError, name as kname, nameToString, parseExport, visit } from "@proofscript/kernel";
+import { buildLean, exportDecls } from "./lean.ts";
+import { type Project, loadProject } from "./project.ts";
+import { type Diagnostic, type GeneratedDecl, Translator } from "./translate.ts";
+
+export interface TheoremResult {
+  readonly tsName: string;
+  readonly file: string;
+  readonly line: number;
+  readonly leanName: string;
+  readonly status: "verified" | "failed";
+  /** Axioms the proof depends on (its trust footprint). */
+  readonly axioms: string[];
+}
+
+export interface CheckResult {
+  readonly diagnostics: Diagnostic[];
+  readonly unverified: Diagnostic[];
+  readonly theorems: TheoremResult[];
+  readonly declarationsChecked: number;
+}
+
+/** Axioms of Lean's logic that ProofScript accepts as standard (design §6.7). */
+export const STANDARD_AXIOMS = new Set(["propext", "Quot.sound", "Classical.choice"]);
+
+export function check(target: string | readonly string[], workDir?: string): CheckResult {
+  const project = loadProject(target);
+  return checkProject(project, workDir ?? join(project.rootDir, ".proofscript", "lean"));
+}
+
+export function checkProject(project: Project, workDir: string): CheckResult {
+  const files = project.program.getSourceFiles().filter((f) => !f.isDeclarationFile && !/node_modules/.test(f.fileName));
+  const tr = new Translator(project);
+  const { decls, diagnostics, unverified } = tr.translateFiles(files);
+  const theorems = decls.filter((d) => d.kind === "theorem");
+  const pos = (d: GeneratedDecl) => tr.diag(d.node, "");
+  if (diagnostics.length > 0 || theorems.length === 0) return { diagnostics, unverified, theorems: [], declarationsChecked: 0 };
+
+  // 1. Prove with Lean (untrusted).
+  const build = buildLean(workDir, decls);
+  const failed = new Set<GeneratedDecl>();
+  if (!build.ok) {
+    const starts = [...build.lines.entries()].sort((a, b) => a[1] - b[1]);
+    for (const m of build.messages) {
+      if (m.severity !== "error") continue;
+      let owner = starts[0]?.[0];
+      for (const [d, line] of starts) if (line <= m.line) owner = d;
+      if (owner === undefined) continue;
+      failed.add(owner);
+      const p = pos(owner);
+      const what = owner.kind === "theorem" ? "proof failed" : `could not translate ${owner.tsName} to the logic`;
+      diagnostics.push({ ...p, message: `${what}: ${m.text}` });
+    }
+    return {
+      diagnostics,
+      unverified,
+      theorems: theorems.map((t) => ({ ...base(t, pos), status: "failed" as const, axioms: [] })),
+      declarationsChecked: 0,
+    };
+  }
+
+  // 2. Export the proofs and check them with ProofScript's kernel (trusted).
+  const text = exportDecls(workDir, theorems.map((t) => t.leanName));
+  const kernel = new Kernel();
+  let count = 0;
+  try {
+    for (const d of parseExport(text).declarations) {
+      kernel.add(d);
+      count++;
+    }
+    kernel.finish();
+  } catch (e) {
+    if (!(e instanceof KernelError)) throw e;
+    diagnostics.push({ file: "", line: 0, column: 0, message: `the ProofScript kernel rejected the proof terms Lean produced: ${e.message}` });
+    return { diagnostics, unverified, theorems: theorems.map((t) => ({ ...base(t, pos), status: "failed" as const, axioms: [] })), declarationsChecked: count };
+  }
+
+  const results = theorems.map((t) => {
+    const c = kernel.env.get(kname(t.leanName));
+    if (c === undefined || c.kind !== "theorem") {
+      diagnostics.push({ ...pos(t), message: `internal error: ${t.leanName} missing from the export` });
+      return { ...base(t, pos), status: "failed" as const, axioms: [] };
+    }
+    return { ...base(t, pos), status: "verified" as const, axioms: axiomsOf(kernel, c) };
+  });
+  return { diagnostics, unverified, theorems: results, declarationsChecked: count };
+}
+
+function base(t: GeneratedDecl, pos: (d: GeneratedDecl) => Diagnostic) {
+  const p = pos(t);
+  return { tsName: t.tsName, file: p.file, line: p.line, leanName: t.leanName };
+}
+
+/** Transitive axioms a constant depends on (Lean's `#print axioms`). */
+export function axiomsOf(kernel: Kernel, root: ConstantInfo): string[] {
+  const seen = new Set<string>();
+  const axioms = new Set<string>();
+  const stack: ConstantInfo[] = [root];
+  const push = (e: Expr) =>
+    visit(e, (s) => {
+      if (s.kind === "const") {
+        const n = nameToString(s.name);
+        if (!seen.has(n)) {
+          seen.add(n);
+          const c = kernel.env.get(s.name);
+          if (c !== undefined) stack.push(c);
+        }
+        return false;
+      }
+      return true;
+    });
+  while (stack.length > 0) {
+    const c = stack.pop()!;
+    if (c.kind === "axiom") axioms.add(nameToString(c.name) === "sorryAx" ? "sorry" : nameToString(c.name));
+    push(c.type);
+    if ("value" in c) push(c.value);
+    if (c.kind === "recursor") for (const r of c.rules) push(r.rhs);
+  }
+  return [...axioms].sort();
+}
+
+export function formatResult(r: CheckResult, rootDir: string): string {
+  const lines: string[] = [];
+  for (const d of r.diagnostics) {
+    const where = d.file === "" ? "" : `${relative(rootDir, d.file)}:${d.line}:${d.column}: `;
+    lines.push(`${where}error: ${d.message}`);
+  }
+  for (const d of r.unverified) lines.push(`${relative(rootDir, d.file)}:${d.line}:${d.column}: warning: ${d.message}`);
+  for (const t of r.theorems) {
+    const extra = t.axioms.filter((a) => !STANDARD_AXIOMS.has(a));
+    const mark = t.status === "verified" ? (extra.length > 0 ? "⚠" : "✓") : "✗";
+    const ax = t.axioms.length === 0 ? "no axioms" : `axioms: ${t.axioms.join(", ")}`;
+    lines.push(`${mark} ${t.tsName} (${relative(rootDir, t.file)}:${t.line}) — ${t.status}, ${ax}`);
+  }
+  const verified = r.theorems.filter((t) => t.status === "verified").length;
+  lines.push(
+    `\n${verified}/${r.theorems.length} theorems verified; ${r.declarationsChecked} declarations checked by the ProofScript kernel.`,
+  );
+  return lines.join("\n");
+}

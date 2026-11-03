@@ -1,4 +1,4 @@
-import { by, exact, induction, simp, type nat, type Plus, type Prop } from "./proofscript/index.ts";
+import { by, exact, induction, type nat, type Plus, type Prop } from "./proofscript/index.ts";
 
 // An inductive family of propositions. `interface` + `declare namespace` emit no
 // JavaScript. TS sees an opaque type; ProofScript sees
@@ -12,9 +12,11 @@ export declare namespace Even {
 }
 
 // Curry–Howard: when the claim is a type, it is the return type.
-export function even_add<a extends nat, b extends nat>(ha: Even<a>, hb: Even<b>): Even<Plus<a, b>> {
+// `b + 0` and `b + (k + 2)` reduce to `b` and `(b + k) + 2` by computation,
+// so each case is closed by a constructor, with no arithmetic lemmas.
+export function even_add<a extends nat, b extends nat>(ha: Even<a>, hb: Even<b>): Even<Plus<b, a>> {
   return by(induction(ha, {
     zero: () => exact(hb),
-    step: (_h, ih) => by(simp(), exact(Even.step(ih))),
+    step: (_h, ih) => exact(Even.step(ih)),
   }));
 }

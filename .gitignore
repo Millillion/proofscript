@@ -1,3 +1,5 @@
 node_modules
 dist
 .proofscript-build
+.proofscript/
+.lake/

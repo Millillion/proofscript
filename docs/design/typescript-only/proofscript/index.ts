@@ -108,3 +108,10 @@ export function exact(_proof: unknown): Tactic {
 export function congrArg<A>(_f: (a: A) => unknown, _h: Proof): Proof {
   return inert;
 }
+/** Structural (propositional) equality; at runtime, a deep comparison. */
+export function eq<T>(a: T, b: T): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+export function rw(..._lemmas: unknown[]): Tactic {
+  return inert;
+}

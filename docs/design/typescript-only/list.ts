@@ -1,4 +1,4 @@
-import { by, induction, prove, simp, type Is, type nat, type Proof, type Simp } from "./proofscript/index.ts";
+import { by, induction, omega, prove, simp, type Is, type nat, type Proof, type Simp } from "./proofscript/index.ts";
 
 export type List<T> =
   | { readonly tag: "nil" }
@@ -26,6 +26,9 @@ export function fromArray<T>(a: readonly T[]): List<T> {
 export function length_append<T>(xs: List<T>, ys: List<T>): Proof & Simp {
   return prove(
     length(append(xs, ys)) === length(xs) + length(ys),
-    by(induction(xs), simp(length, append)),
+    by(induction(xs, {
+      nil: () => simp(length, append),
+      cons: (_head, _tail, ih) => by(simp(length, append, ih), omega),
+    })),
   );
 }

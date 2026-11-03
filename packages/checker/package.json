@@ -7,6 +7,10 @@
     ".": "./src/index.ts"
   },
   "dependencies": {
-    "typescript6": "npm:typescript@^6.0.3"
+    "typescript6": "npm:typescript@^6.0.3",
+    "@proofscript/kernel": "*"
+  },
+  "bin": {
+    "proofscript": "./src/cli.ts"
   }
 }
