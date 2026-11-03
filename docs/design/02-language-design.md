@@ -502,11 +502,11 @@ export function loadPort(path: string): Port {
 
 These are the decisions the design does not yet settle. Each will be resolved by a short design note in `docs/design/` before the code that depends on it.
 
-1. **Kernel strategy.** Our own LeanTT kernel in TypeScript with Lean export (recommended), versus using Lean 4 as the checking backend from day one (faster start, but a heavy native dependency, slower editor loop, and ProofScript-in-the-browser lost).
+1. ~~**Kernel strategy.**~~ **Decided (2026-11-02):** our own LeanTT kernel in TypeScript, with every proof exported to and re-checked by Lean in CI.
 2. **Lean interop as a library source.** Because the kernel is LeanTT, Lean's core library, and eventually Mathlib, could in principle be imported as kernel terms and re-checked. This could give ProofScript a large mathematical library for free; the cost is mapping Lean's names, notation and type classes into ProofScript surface syntax.
 3. **Type classes / overloading of spec operators** (e.g. `+` on user types, `Decidable`). Lean relies on type classes heavily; TS has no direct equivalent. Likely: a ghost `instance` mechanism resolved by the elaborator.
 4. **Exception specs by default.** Phase 1 says "may throw" unless specified; level 2 may require `throws` clauses on verified functions.
 5. **Heap reasoning surface.** Dynamic frames (Dafny) vs. ownership-flavoured permissions (Verus/Prusti), given that TS has no ownership types.
 6. **Classes, `this`, prototypes, getters** in the verifiable subset.
 7. **Tactic metaprogramming** — tactics written in ProofScript, with a quotation syntax for kernel terms.
-8. **File extension.** `.pts`/`.ptsx` (recommended; content mappers cannot claim `.ts`) vs. `.proof.ts`, and a comment-based "lite" mode for unrenamed `.ts` files.
+8. **Surface syntax and file extension.** See [04-surface-syntax.md](04-surface-syntax.md), which proposes valid TypeScript (`.ts` + `//@` annotations + `.proof.ts` proof modules) as the primary surface, with this document's dedicated syntax as optional later sugar. Original question: `.pts`/`.ptsx` (recommended; content mappers cannot claim `.ts`) vs. `.proof.ts`, and a comment-based "lite" mode for unrenamed `.ts` files.
