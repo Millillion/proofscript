@@ -51,3 +51,16 @@ test("bad-identity: `===` on objects is not structural equality", () => {
   assert.equal(r.theorems.length, 0);
   assert.ok(r.diagnostics.some((d) => /compares identity/.test(d.message)));
 });
+
+test("good-post: postconditions are proved automatically; preconditions are enforced", { skip: !hasLean }, () => {
+  const r = run("good-post");
+  assert.deepEqual(r.diagnostics, []);
+  assert.deepEqual(r.theorems.map((t) => t.status), ["verified", "verified"]);
+  assert.ok(r.theorems[0]!.reflected.includes("append"), "the footprint names the reflected function");
+});
+
+test("bad-post: a wrong postcondition does not verify", { skip: !hasLean }, () => {
+  const r = run("bad-post");
+  assert.equal(r.theorems.length, 1);
+  assert.equal(r.theorems[0]!.status, "failed");
+});

@@ -15,6 +15,8 @@ export interface TheoremResult {
   readonly status: "verified" | "admitted" | "failed";
   /** Axioms the proof depends on (its trust footprint). */
   readonly axioms: string[];
+  /** TypeScript functions reflected into the logic that the result depends on (trusted translation). */
+  readonly reflected: string[];
 }
 
 export interface CheckResult {
@@ -38,7 +40,8 @@ export function checkProject(project: Project, workDir: string): CheckResult {
   const { decls, diagnostics, unverified } = tr.translateFiles(files);
   const theorems = decls.filter((d) => d.kind === "theorem");
   const pos = (d: GeneratedDecl) => tr.diag(d.node, "");
-  if (diagnostics.length > 0 || theorems.length === 0) return { diagnostics, unverified, theorems: [], declarationsChecked: 0 };
+  // Declarations that could not be translated are reported; everything else is still checked.
+  if (theorems.length === 0) return { diagnostics, unverified, theorems: [], declarationsChecked: 0 };
 
   // 1. Prove with Lean (untrusted).
   const build = buildLean(workDir, decls);
@@ -58,7 +61,7 @@ export function checkProject(project: Project, workDir: string): CheckResult {
     return {
       diagnostics,
       unverified,
-      theorems: theorems.map((t) => ({ ...base(t, pos), status: "failed" as const, axioms: [] })),
+      theorems: theorems.map((t) => ({ ...base(t, pos), status: "failed" as const, axioms: [], reflected: [] })),
       declarationsChecked: 0,
     };
   }
@@ -76,17 +79,18 @@ export function checkProject(project: Project, workDir: string): CheckResult {
   } catch (e) {
     if (!(e instanceof KernelError)) throw e;
     diagnostics.push({ file: "", line: 0, column: 0, message: `the ProofScript kernel rejected the proof terms Lean produced: ${e.message}` });
-    return { diagnostics, unverified, theorems: theorems.map((t) => ({ ...base(t, pos), status: "failed" as const, axioms: [] })), declarationsChecked: count };
+    return { diagnostics, unverified, theorems: theorems.map((t) => ({ ...base(t, pos), status: "failed" as const, axioms: [], reflected: [] })), declarationsChecked: count };
   }
 
+  const defNames = new Map(decls.filter((d) => d.kind === "def").map((d) => [d.leanName, d.tsName]));
   const results = theorems.map((t) => {
     const c = kernel.env.get(kname(t.leanName));
     if (c === undefined || c.kind !== "theorem") {
       diagnostics.push({ ...pos(t), message: `internal error: ${t.leanName} missing from the export` });
-      return { ...base(t, pos), status: "failed" as const, axioms: [] };
+      return { ...base(t, pos), status: "failed" as const, axioms: [], reflected: [] };
     }
-    const axioms = axiomsOf(kernel, c);
-    return { ...base(t, pos), status: axioms.includes("sorry") ? ("admitted" as const) : ("verified" as const), axioms };
+    const { axioms, reflected } = footprint(kernel, c, defNames);
+    return { ...base(t, pos), status: axioms.includes("sorry") ? ("admitted" as const) : ("verified" as const), axioms, reflected };
   });
   return { diagnostics, unverified, theorems: results, declarationsChecked: count };
 }
@@ -96,8 +100,8 @@ function base(t: GeneratedDecl, pos: (d: GeneratedDecl) => Diagnostic) {
   return { tsName: t.tsName, file: p.file, line: p.line, leanName: t.leanName };
 }
 
-/** Transitive axioms a constant depends on (Lean's `#print axioms`). */
-export function axiomsOf(kernel: Kernel, root: ConstantInfo): string[] {
+/** Transitive axioms (Lean's `#print axioms`) and reflected TypeScript functions a constant depends on. */
+export function footprint(kernel: Kernel, root: ConstantInfo, defNames: ReadonlyMap<string, string>): { axioms: string[]; reflected: string[] } {
   const seen = new Set<string>();
   const axioms = new Set<string>();
   const stack: ConstantInfo[] = [root];
@@ -114,14 +118,18 @@ export function axiomsOf(kernel: Kernel, root: ConstantInfo): string[] {
       }
       return true;
     });
+  const reflected = new Set<string>();
   while (stack.length > 0) {
     const c = stack.pop()!;
-    if (c.kind === "axiom") axioms.add(nameToString(c.name) === "sorryAx" ? "sorry" : nameToString(c.name));
+    const cn = nameToString(c.name);
+    const ts = defNames.get(cn);
+    if (ts !== undefined) reflected.add(ts);
+    if (c.kind === "axiom") axioms.add(cn === "sorryAx" ? "sorry" : cn);
     push(c.type);
     if ("value" in c) push(c.value);
     if (c.kind === "recursor") for (const r of c.rules) push(r.rhs);
   }
-  return [...axioms].sort();
+  return { axioms: [...axioms].sort(), reflected: [...reflected].sort() };
 }
 
 export function formatResult(r: CheckResult, rootDir: string): string {
@@ -134,7 +142,7 @@ export function formatResult(r: CheckResult, rootDir: string): string {
   for (const t of r.theorems) {
     const extra = t.axioms.filter((a) => !STANDARD_AXIOMS.has(a));
     const mark = t.status === "verified" ? (extra.length > 0 ? "⚠" : "✓") : t.status === "admitted" ? "⚠" : "✗";
-    const ax = t.axioms.length === 0 ? "no axioms" : `axioms: ${t.axioms.join(", ")}`;
+    const ax = (t.axioms.length === 0 ? "no axioms" : `axioms: ${t.axioms.join(", ")}`) + (t.reflected.length === 0 ? "" : `; trusts the translation of ${t.reflected.join(", ")}`);
     lines.push(`${mark} ${t.tsName} (${relative(rootDir, t.file)}:${t.line}) — ${t.status}, ${ax}`);
   }
   const verified = r.theorems.filter((t) => t.status === "verified").length;

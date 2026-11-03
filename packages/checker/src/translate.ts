@@ -31,6 +31,8 @@ export class TranslationError extends Error {
 
 export interface GeneratedDecl {
   readonly kind: "inductive" | "def" | "theorem";
+  /** For generated proof obligations (postconditions): what they establish. */
+  readonly obligation?: string;
   readonly tsName: string;
   readonly leanName: string;
   readonly node: ts.Node;
@@ -50,6 +52,49 @@ export interface Translation {
 const REFINEMENTS = new Set(["Lt", "Le", "Gt", "Ge", "Length", "Is", "Simp"]);
 
 type Mode = "value" | "prop";
+
+/** A function declaration or a `const f = (…) => …` / `const f = function (…) {…}`. */
+interface FnLike {
+  readonly node: ts.FunctionDeclaration | ts.VariableDeclaration;
+  readonly name: ts.Identifier;
+  readonly typeParameters: ts.NodeArray<ts.TypeParameterDeclaration> | undefined;
+  readonly parameters: ts.NodeArray<ts.ParameterDeclaration>;
+  readonly type: ts.TypeNode | undefined;
+  readonly body: ts.Block | ts.Expression | undefined;
+  readonly isGeneratorOrAsync: boolean;
+}
+
+function fnLike(d: ts.Node | undefined): FnLike | undefined {
+  if (d === undefined) return undefined;
+  if (ts.isFunctionDeclaration(d) && d.name !== undefined) {
+    return {
+      node: d,
+      name: d.name,
+      typeParameters: d.typeParameters,
+      parameters: d.parameters,
+      type: d.type,
+      body: d.body,
+      isGeneratorOrAsync: d.asteriskToken !== undefined || (d.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) ?? false),
+    };
+  }
+  if (ts.isVariableDeclaration(d) && ts.isIdentifier(d.name) && d.initializer !== undefined) {
+    const f = d.initializer;
+    if (ts.isArrowFunction(f) || ts.isFunctionExpression(f)) {
+      const list = d.parent;
+      if (!ts.isVariableDeclarationList(list) || !(list.flags & ts.NodeFlags.Const)) return undefined;
+      return {
+        node: d,
+        name: d.name,
+        typeParameters: f.typeParameters,
+        parameters: f.parameters,
+        type: f.type,
+        body: f.body,
+        isGeneratorOrAsync: (ts.isFunctionExpression(f) && f.asteriskToken !== undefined) || (f.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword) ?? false),
+      };
+    }
+  }
+  return undefined;
+}
 
 interface Scope {
   /** Lean spelling for local symbols (parameters, callback parameters, `const`s, narrowed fields). */
@@ -93,8 +138,14 @@ export class Translator {
   translateFiles(files: readonly ts.SourceFile[]): Translation {
     for (const sf of files) {
       for (const st of sf.statements) {
-        if (ts.isFunctionDeclaration(st) && st.name !== undefined && this.isTheorem(st)) {
+        if (ts.isFunctionDeclaration(st) && st.name !== undefined && (this.isTheorem(st) || this.hasSpec(st.type))) {
           this.#guard(() => this.requireDecl(st));
+        }
+        if (ts.isVariableStatement(st)) {
+          for (const d of st.declarationList.declarations) {
+            const fl = fnLike(d);
+            if (fl !== undefined && this.hasSpec(fl.type)) this.#guard(() => this.requireDecl(d));
+          }
         }
       }
     }
@@ -161,6 +212,15 @@ export class Translator {
     if (ret !== undefined && ts.isCallExpression(ret) && this.ps(ret.expression) === "prove") return true;
     if (fn.type !== undefined && this.isPropType(fn.type)) return true;
     return false;
+  }
+
+  /** A function with a refined return type (a postcondition) must be verified. */
+  hasSpec(t: ts.TypeNode | undefined): boolean {
+    return (
+      t !== undefined &&
+      ts.isIntersectionTypeNode(t) &&
+      t.types.some((m) => ts.isTypeReferenceNode(m) && ["Lt", "Le", "Gt", "Ge", "Is"].includes(this.ps(m.typeName) ?? ""))
+    );
   }
 
   singleReturn(fn: ts.FunctionDeclaration): ts.Expression | undefined {
@@ -231,7 +291,20 @@ export class Translator {
       if (this.#inProgress.has(decl)) return name; // recursion
       this.#inProgress.add(decl);
       try {
-        const g = this.isTheorem(decl) ? this.translateTheorem(decl) : this.translateFunction(decl);
+        const g = this.isTheorem(decl) ? this.translateTheorem(decl) : this.translateFunction(fnLike(decl)!);
+        this.decls.set(decl, g);
+        return g.leanName;
+      } finally {
+        this.#inProgress.delete(decl);
+      }
+    }
+    const fl = fnLike(decl);
+    if (fl !== undefined) {
+      const name = this.leanNameOf(decl as ts.VariableDeclaration);
+      if (this.#inProgress.has(decl)) return name;
+      this.#inProgress.add(decl);
+      try {
+        const g = this.translateFunction(fl);
         this.decls.set(decl, g);
         return g.leanName;
       } finally {
@@ -244,7 +317,7 @@ export class Translator {
   // ---- Types ------------------------------------------------------------------------------
 
   /** Lean type for a TypeScript type node. `deps` collects referenced Lean declarations. */
-  type(t: ts.TypeNode, deps: Set<string>, typeParams: Map<ts.Symbol, string>): string {
+  type(t: ts.TypeNode, deps: Set<string>, typeParams: Map<ts.Symbol, string>, verifiedRefinements = false): string {
     switch (t.kind) {
       case ts.SyntaxKind.BooleanKeyword:
         return "Bool";
@@ -297,8 +370,8 @@ export class Translator {
       const carrier = t.types.filter((m) => !(ts.isTypeReferenceNode(m) && REFINEMENTS.has(this.ps(m.typeName) ?? "")));
       if (carrier.length !== 1) return this.fail(t, "unsupported intersection type");
       for (const m of t.types) {
-        if (m !== carrier[0] && !(ts.isTypeReferenceNode(m) && this.ps(m.typeName) === "Simp")) {
-          const d = this.diag(m, `refinement \`${m.getText()}\` is not verified yet (refinement checking arrives in milestone M4)`);
+        if (!verifiedRefinements && m !== carrier[0] && !(ts.isTypeReferenceNode(m) && this.ps(m.typeName) === "Simp")) {
+          const d = this.diag(m, `precondition \`${m.getText()}\` is not yet checked at call sites (it is assumed when proving this function's postconditions)`);
           if (!this.unverified.some((x) => x.file === d.file && x.line === d.line && x.column === d.column)) this.unverified.push(d);
         }
       }
@@ -307,6 +380,9 @@ export class Translator {
     if (ts.isTypeQueryNode(t)) {
       // `typeof x` in an index position: the value x itself.
       return this.fail(t, "`typeof x` value indices are not supported by the Lean engine yet");
+    }
+    if (ts.isArrayTypeNode(t) || (ts.isTypeOperatorNode(t) && ts.isArrayTypeNode(t.type))) {
+      return this.fail(t, "arrays are not supported in the logic yet (milestone M5)");
     }
     return this.fail(t, `unsupported type ${t.getText()}`);
   }
@@ -337,6 +413,9 @@ export class Translator {
     const cached = this.#inductives.get(decl);
     if (cached !== undefined) return cached;
     const leanName = this.leanNameOf(decl);
+    if (ts.isIntersectionTypeNode(decl.type) || ts.isArrayTypeNode(decl.type) || ts.isTypeOperatorNode(decl.type)) {
+      return this.fail(decl, "refinement type aliases and arrays are not supported in the logic yet (milestone M5)");
+    }
     const members = ts.isUnionTypeNode(decl.type) ? decl.type.types : [decl.type];
     const ctors: InductiveShape["ctors"] = [];
     for (const m of members) {
@@ -363,6 +442,18 @@ export class Translator {
     const params = (decl.typeParameters ?? []).map((tp) => this.ident(tp.name.text));
     const shape: InductiveShape = { leanName, params, ctors };
     this.#inductives.set(decl, shape);
+    try {
+      this.#emitInductive(decl, shape);
+    } catch (e) {
+      this.#inductives.delete(decl);
+      this.decls.delete(decl);
+      throw e;
+    }
+    return shape;
+  }
+
+  #emitInductive(decl: ts.TypeAliasDeclaration, shape: InductiveShape): void {
+    const { leanName, params, ctors } = shape;
     // Register before translating field types (they may refer to the type itself).
     const placeholder: GeneratedDecl = { kind: "inductive", tsName: decl.name.text, leanName, node: decl, source: "", deps: new Set() };
     this.decls.set(decl, placeholder);
@@ -380,7 +471,6 @@ export class Translator {
     }
     deps.delete(leanName);
     this.decls.set(decl, { ...placeholder, source: lines.join("\n"), deps });
-    return shape;
   }
 
   shapeOfType(t: ts.Type): InductiveShape | undefined {
@@ -398,6 +488,15 @@ export class Translator {
     if (existing !== undefined) return existing.leanName;
     const placeholder: GeneratedDecl = { kind: "inductive", tsName: decl.name.text, leanName, node: decl, source: "", deps: new Set() };
     this.decls.set(decl, placeholder);
+    try {
+      return this.#emitPropInductive(decl, leanName, placeholder);
+    } catch (e) {
+      this.decls.delete(decl);
+      throw e;
+    }
+  }
+
+  #emitPropInductive(decl: ts.InterfaceDeclaration, leanName: string, placeholder: GeneratedDecl): string {
     const deps = new Set<string>();
     const indexTypes: string[] = [];
     const typeParams = new Map<ts.Symbol, string>();
@@ -429,32 +528,150 @@ export class Translator {
 
   // ---- Functions -------------------------------------------------------------------------------
 
-  translateFunction(fn: ts.FunctionDeclaration): GeneratedDecl {
-    const leanName = this.leanNameOf(fn);
-    if (fn.body === undefined) return this.fail(fn, "functions used in the logic need a body");
-    if (fn.type === undefined) return this.fail(fn, "functions used in the logic need a declared return type");
-    if (fn.asteriskToken !== undefined || fn.modifiers?.some((m) => m.kind === ts.SyntaxKind.AsyncKeyword)) {
-      return this.fail(fn, "generators and async functions cannot be used in the logic");
+  translateFunction(fn: FnLike): GeneratedDecl {
+    const leanName = this.leanNameOf(fn.node);
+    if (fn.body === undefined) return this.fail(fn.node, "functions used in the logic need a body");
+    let inferredBool = false;
+    if (fn.type === undefined) {
+      // An unannotated return type is accepted only when TypeScript infers `boolean`
+      // (numbers are ambiguous: `nat`, `int` or IEEE-754 `number`).
+      const sig = this.checker.getSignatureFromDeclaration(ts.isVariableDeclaration(fn.node) ? (fn.node.initializer as ts.SignatureDeclaration) : fn.node);
+      const rt = sig === undefined ? undefined : this.checker.getReturnTypeOfSignature(sig);
+      if (rt === undefined || !(rt.flags & ts.TypeFlags.BooleanLike)) {
+        return this.fail(fn.node, "functions used in the logic need a declared return type (only `boolean` may be left to inference)");
+      }
+      inferredBool = true;
     }
+    if (fn.isGeneratorOrAsync) return this.fail(fn.node, "generators and async functions cannot be used in the logic");
     const deps = new Set<string>();
     const scope: Scope = { locals: new Map(), narrowed: new Map() };
     const typeParams = new Map<ts.Symbol, string>();
     const binders = this.typeParamBinders(fn.typeParameters, deps, typeParams);
-    for (const p of fn.parameters) {
+    fn.parameters.forEach((p, i) => {
       if (!ts.isIdentifier(p.name) || p.type === undefined || p.initializer !== undefined || p.dotDotDotToken !== undefined) {
         return this.fail(p, "parameters of functions used in the logic need a plain name and a type");
       }
       const n = this.ident(p.name.text);
       const sym = this.checker.getSymbolAtLocation(p.name);
       if (sym !== undefined) scope.locals.set(sym, n);
-      binders.push(`(${n} : ${this.type(p.type, deps, typeParams)})`);
-    }
-    const ret = this.type(fn.type, deps, typeParams);
-    const body = this.statements(fn.body.statements, 0, scope, deps, fn);
+      binders.push(`(${n} : ${this.type(p.type, deps, typeParams, true)})`);
+      binders.push(...this.preconditionBinders(p, n, i, scope, deps, typeParams));
+      return undefined;
+    });
+    const ret = inferredBool ? "Bool" : this.type(fn.type!, deps, typeParams, true);
+    const body = ts.isBlock(fn.body) ? this.statements(fn.body.statements, 0, scope, deps, fn.node) : this.expr(fn.body, "value", scope, deps);
+    const recursive = deps.has(leanName);
     deps.delete(leanName);
     const source = `def ${leanName}${binders.map((b) => ` ${b}`).join("")} : ${ret} :=\n  ${indent(body, 2)}`;
-    return { kind: "def", tsName: fn.name!.text, leanName, node: fn, source, deps };
+    const def: GeneratedDecl = { kind: "def", tsName: fn.name.text, leanName, node: fn.node, source, deps };
+    this.decls.set(fn.node, def);
+    this.#postconditions(fn, def, binders, scope, typeParams, recursive);
+    return def;
   }
+
+  /**
+   * Preconditions: each refinement of a parameter becomes a proof argument with a
+   * default tactic (a Lean autoParam), so every call site must prove it, in its own
+   * context (including the conditions of enclosing `if`s).
+   */
+  preconditionBinders(p: ts.ParameterDeclaration, n: string, i: number, scope: Scope, deps: Set<string>, typeParams: Map<ts.Symbol, string>): string[] {
+    if (p.type === undefined || !ts.isIntersectionTypeNode(p.type)) return [];
+    const out: string[] = [];
+    p.type.types.forEach((m, k) => {
+      const prop = this.refinementProp(m, n, scope, deps, typeParams);
+      if (prop !== undefined) out.push(`(pre_${i}_${k} : ${prop} := by first | omega | (simp_all <;> omega) | decide)`);
+    });
+    return out;
+  }
+
+  /** The proposition a refinement type asserts of `subject`, or undefined if `m` is the carrier. */
+  refinementProp(m: ts.TypeNode, subject: string, scope: Scope, deps: Set<string>, typeParams: Map<ts.Symbol, string>): string | undefined {
+    if (!ts.isTypeReferenceNode(m)) return undefined;
+    const kind = this.ps(m.typeName);
+    const args = m.typeArguments ?? [];
+    const value = (t: ts.TypeNode): string => {
+      if (ts.isTypeQueryNode(t) && ts.isIdentifier(t.exprName)) return this.local(t.exprName, scope);
+      if (ts.isLiteralTypeNode(t) && ts.isNumericLiteral(t.literal)) return t.literal.text;
+      return this.type(t, deps, typeParams);
+    };
+    switch (kind) {
+      case "Lt":
+        return `${subject} < ${value(args[0]!)}`;
+      case "Le":
+        return `${subject} ≤ ${value(args[0]!)}`;
+      case "Gt":
+        return `${subject} > ${value(args[0]!)}`;
+      case "Ge":
+        return `${subject} ≥ ${value(args[0]!)}`;
+      case "Is": {
+        const pred = args[0];
+        if (pred === undefined || !ts.isTypeQueryNode(pred) || !ts.isIdentifier(pred.exprName)) return this.fail(m, "`Is` takes `typeof predicate`");
+        const decl = this.declOf(pred.exprName);
+        if (decl === undefined || fnLike(decl) === undefined) return this.fail(pred, "predicates in `Is` must be functions declared in your project");
+        const pn = this.requireDecl(decl);
+        deps.add(pn);
+        const extra = args[1] === undefined ? [] : ts.isTupleTypeNode(args[1]) ? args[1].elements.map((e) => value(e as ts.TypeNode)) : this.fail(args[1], "expected a tuple of arguments");
+        return `${pn} ${subject}${extra.map((x) => ` ${x}`).join("")} = true`;
+      }
+      default:
+        return undefined;
+    }
+  }
+
+  #postconditions(
+    fn: FnLike,
+    def: GeneratedDecl,
+    binders: string[],
+    scope: Scope,
+    typeParams: Map<ts.Symbol, string>,
+    recursive: boolean,
+  ): void {
+    const rt = fn.type;
+    if (rt === undefined || !ts.isIntersectionTypeNode(rt)) return;
+    const args = fn.parameters.map((p) => this.local(p.name as ts.Identifier, scope));
+    const call = `(${def.leanName}${args.map((a) => ` ${a}`).join("")})`;
+    const allArgs = binders.map((b) => /^[({]([^ ]+) :/.exec(b)?.[1]).filter((x): x is string => x !== undefined && !b0IsType(x, binders));
+    rt.types.forEach((m, i) => {
+      this.#guard(() => {
+        const deps = new Set<string>([def.leanName]);
+        const prop = this.refinementProp(m, call, scope, deps, typeParams);
+        if (prop === undefined) return;
+        const simpSet = [def.leanName, ...this.#defClosure(deps, def.leanName)].join(", ");
+        const tac = recursive
+          ? `fun_induction ${def.leanName}${allArgs.map((a) => ` ${a}`).join("")} <;> simp_all [${simpSet}] <;> (try omega)`
+          : `simp_all [${simpSet}] <;> (try omega)`;
+        const leanName = `${def.leanName}.post_${i}`;
+        const source = `@[simp] theorem ${leanName}${binders.map((b) => ` ${b}`).join("")} :\n    ${prop} := by\n  ${tac}`;
+        const key = m as ts.Node;
+        this.decls.set(key, {
+          kind: "theorem",
+          tsName: `${def.tsName} (postcondition \`${m.getText()}\`)`,
+          leanName,
+          node: m,
+          source,
+          deps,
+          obligation: `postcondition of ${def.tsName}`,
+        });
+      });
+    });
+  }
+
+  /** Definitions reachable from `roots` (for unfolding in automatic proofs). */
+  #defClosure(roots: Iterable<string>, exclude: string): string[] {
+    const byName = new Map([...this.decls.values()].map((d) => [d.leanName, d]));
+    const out = new Set<string>();
+    const stack = [...roots];
+    while (stack.length > 0) {
+      const n = stack.pop()!;
+      const d = byName.get(n);
+      if (d === undefined || d.kind !== "def" || out.has(n)) continue;
+      if (n !== exclude) out.add(n);
+      stack.push(...d.deps);
+    }
+    return [...out];
+  }
+
+
 
   /** Translates a statement list that must end in `return` on every path. */
   statements(sts: readonly ts.Statement[], i: number, scope: Scope, deps: Set<string>, ctx: ts.Node): string {
@@ -579,8 +796,11 @@ export class Translator {
     if (t !== undefined) {
       return this.match(t.x, (tag) => ((tag === t.tag) === t.positive ? a : b), scope, deps, cond, "value", (f, s) => f(s));
     }
-    const c = this.expr(cond, "value", scope, deps);
-    return `if ${c} then\n  ${indent(a(scope), 2)}\nelse\n  ${indent(b(scope), 2)}`;
+    // Dependent `if`: each branch has its condition (or its negation) as a hypothesis,
+    // which precondition and subtraction side conditions can use.
+    const c = this.expr(cond, "prop", scope, deps);
+    const h = this.freshVar("h");
+    return `if ${h} : ${c} then\n  ${indent(a(scope), 2)}\nelse\n  ${indent(b(scope), 2)}`;
   }
 
   local(id: ts.Identifier, scope: Scope): string {
@@ -613,7 +833,7 @@ export class Translator {
       const ps = this.ps(e);
       if (ps !== undefined) return this.fail(e, `ProofScript's ${ps} cannot be used as a value here`);
       const decl = this.declOf(e);
-      if (decl !== undefined && ts.isFunctionDeclaration(decl)) {
+      if (decl !== undefined && fnLike(decl) !== undefined) {
         const ln = this.requireDecl(decl);
         deps.add(ln);
         return ln;
@@ -699,10 +919,15 @@ export class Translator {
       case ts.SyntaxKind.MinusToken: {
         this.requireIntegerType(e, scope);
         const op = k === ts.SyntaxKind.PlusToken ? "+" : k === ts.SyntaxKind.AsteriskToken ? "*" : "-";
+        const l = sub(e.left, "value");
+        const r = sub(e.right, "value");
         if (op === "-" && this.isNatExpr(e.left, scope)) {
-          return this.fail(e, "subtraction on `nat` is not supported in the logic yet (its result may be negative in JavaScript)");
+          // In JavaScript the result could be negative; in Lean, Nat subtraction would
+          // silently truncate. So the subtraction is only allowed where it is proved
+          // not to go below zero.
+          return `(have _ : ${r} ≤ ${l} := (by first | omega | (simp_all <;> omega) | decide); ${l} - ${r})`;
         }
-        return `(${sub(e.left, "value")} ${op} ${sub(e.right, "value")})`;
+        return `(${l} ${op} ${r})`;
       }
       default:
         return this.fail(e.operatorToken, `operator ${e.operatorToken.getText()} is not supported in the logic yet`);
@@ -723,6 +948,13 @@ export class Translator {
     if (ts.isBigIntLiteral(e)) return "bigint";
     const fromTypeNode = (t: ts.TypeNode | undefined): ReturnType<Translator["kindOf"]> => {
       if (t === undefined) return "other";
+      if (ts.isIntersectionTypeNode(t)) {
+        for (const m of t.types) {
+          const k = fromTypeNode(m);
+          if (k !== "other") return k;
+        }
+        return "other";
+      }
       if (t.kind === ts.SyntaxKind.BooleanKeyword) return "boolean";
       if (t.kind === ts.SyntaxKind.StringKeyword) return "string";
       if (t.kind === ts.SyntaxKind.BigIntKeyword) return "bigint";
@@ -749,9 +981,8 @@ export class Translator {
       return f === undefined ? "other" : fromTypeNode(f.type);
     }
     if (ts.isCallExpression(e) && ts.isIdentifier(e.expression)) {
-      const d = this.declOf(e.expression);
-      if (d !== undefined && ts.isFunctionDeclaration(d)) return fromTypeNode(d.type);
-      return "other";
+      const fl = fnLike(this.declOf(e.expression));
+      return fl === undefined ? "other" : fromTypeNode(fl.type);
     }
     if (ts.isBinaryExpression(e)) {
       const k = e.operatorToken.kind;
@@ -817,7 +1048,7 @@ export class Translator {
       switch (ps) {
         case "implies":
           return mode === "prop"
-            ? `(${this.expr(args[0]!, "prop", scope, deps)} → ${this.expr(args[1]!, "prop", scope, deps)})`
+            ? `(∀ (_ : ${this.expr(args[0]!, "prop", scope, deps)}), ${this.expr(args[1]!, "prop", scope, deps)})`
             : `(!${this.expr(args[0]!, "value", scope, deps)} || ${this.expr(args[1]!, "value", scope, deps)})`;
         case "iff":
           return mode === "prop"
@@ -850,7 +1081,7 @@ export class Translator {
     }
     if (!ts.isIdentifier(e.expression)) return this.fail(e.expression, "only calls to named functions are supported in the logic yet");
     const decl = this.declOf(e.expression);
-    if (decl === undefined || !ts.isFunctionDeclaration(decl)) return this.fail(e.expression, "only calls to function declarations are supported in the logic yet");
+    if (decl === undefined || fnLike(decl) === undefined) return this.fail(e.expression, "only calls to functions declared in your project are supported in the logic yet");
     if (!this.isUserDecl(decl)) return this.fail(e.expression, "this function is not part of the logic (only functions in your project can be reflected)");
     const ln = this.requireDecl(decl);
     deps.add(ln);
@@ -990,7 +1221,7 @@ export class Translator {
       const l = sym === undefined ? undefined : scope.locals.get(sym);
       if (l !== undefined) return l;
       const decl = this.declOf(e);
-      if (decl !== undefined && ts.isFunctionDeclaration(decl)) {
+      if (decl !== undefined && fnLike(decl) !== undefined) {
         const ln = this.requireDecl(decl);
         deps.add(ln);
         return ln;
@@ -1046,7 +1277,7 @@ export class Translator {
       }
       if (ts.isIdentifier(e.expression)) {
         const decl = this.declOf(e.expression);
-        if (decl !== undefined && ts.isFunctionDeclaration(decl)) {
+        if (decl !== undefined && fnLike(decl) !== undefined) {
           const ln = this.requireDecl(decl);
           deps.add(ln);
           return `(${ln}${e.arguments.map((a) => ` ${this.term(a, scope, deps)}`).join("")})`;
@@ -1055,6 +1286,11 @@ export class Translator {
     }
     return this.expr(e, "value", scope, deps);
   }
+}
+
+/** Whether a binder name belongs to an implicit `{T : Type}`/`{n : Nat}` binder (not passed explicitly). */
+function b0IsType(name: string, binders: readonly string[]): boolean {
+  return binders.some((b) => b.startsWith(`{${name} :`));
 }
 
 function blockStatements(s: ts.Statement): readonly ts.Statement[] {
