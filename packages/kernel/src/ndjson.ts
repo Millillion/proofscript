@@ -30,12 +30,52 @@ export interface ExportFile {
 
 type Json = { [k: string]: any };
 
+/** Reads an export incrementally; `line` returns the declarations completed by that line. */
+export class ExportReader {
+  meta: unknown = undefined;
+  readonly #feed: (line: string, lineNo: number) => Declaration[];
+  #lineNo = 0;
+  /** A quotient block may span several lines; it is held here until complete. */
+  #pendingQuot: QuotInfo[] = [];
+
+  constructor() {
+    this.#feed = makeFeeder(this);
+  }
+
+  line(line: string): Declaration[] {
+    this.#lineNo++;
+    if (line.trim() === "") return [];
+    return this.#feed(line, this.#lineNo);
+  }
+
+  /** Flushes anything held back (an incomplete quotient block). */
+  end(): Declaration[] {
+    if (this.#pendingQuot.length === 0) return [];
+    const q: Declaration = { kind: "quot", infos: this.#pendingQuot };
+    this.#pendingQuot = [];
+    return [q];
+  }
+
+  get pendingQuot(): QuotInfo[] {
+    return this.#pendingQuot;
+  }
+  set pendingQuot(q: QuotInfo[]) {
+    this.#pendingQuot = q;
+  }
+}
+
 export function parseExport(text: string): ExportFile {
+  const r = new ExportReader();
+  const declarations: Declaration[] = [];
+  for (const line of text.split("\n")) declarations.push(...r.line(line));
+  declarations.push(...r.end());
+  return { meta: r.meta, declarations };
+}
+
+function makeFeeder(reader: ExportReader): (line: string, lineNo: number) => Declaration[] {
   const names: Name[] = [anonymous];
   const levels: Level[] = [zero];
   const exprs: Expr[] = [];
-  const declarations: Declaration[] = [];
-  let meta: unknown = undefined;
 
   const getName = (i: unknown): Name => {
     if (typeof i !== "number" || names[i] === undefined) throw new KernelError(`bad name index ${String(i)}`);
@@ -124,17 +164,21 @@ export function parseExport(text: string): ExportFile {
     throw new KernelError(`bad definition safety ${String(s)}`);
   };
 
-  let lineNo = 0;
-  for (const line of text.split("\n")) {
-    lineNo++;
-    if (line.trim() === "") continue;
+  return (line: string, lineNo: number): Declaration[] => {
+    const declarations: Declaration[] = [];
     let o: Json;
     try {
       o = JSON.parse(line) as Json;
     } catch {
       throw new KernelError(`line ${lineNo}: invalid JSON`);
     }
-    if ("meta" in o) meta = o.meta;
+    // A quotient block ends after its four constants, or at the next declaration.
+    const isDecl = "axiom" in o || "def" in o || "thm" in o || "opaque" in o || "inductive" in o;
+    if (isDecl && reader.pendingQuot.length > 0) {
+      declarations.push({ kind: "quot", infos: reader.pendingQuot });
+      reader.pendingQuot = [];
+    }
+    if ("meta" in o) reader.meta = o.meta;
     else if ("str" in o) setAt(names, o.in, strName(getName(o.str.pre), String(o.str.str)), "name");
     else if ("num" in o) setAt(names, o.in, numName(getName(o.num.pre), BigInt(getNat(o.num.i))), "name");
     else if ("succ" in o) setAt(levels, o.il, succ(getLevel(o.succ)), "level");
@@ -187,11 +231,10 @@ export function parseExport(text: string): ExportFile {
       if (k !== "type" && k !== "ctor" && k !== "lift" && k !== "ind") throw new KernelError(`line ${lineNo}: bad quot kind`);
       const info: QuotInfo = { kind: "quot", ...base(o.quot), quotKind: k as QuotKind };
       // The four quotient constants arrive as consecutive objects; group them.
-      const last = declarations[declarations.length - 1];
-      if (last !== undefined && last.kind === "quot" && last.infos.length < 4) {
-        declarations[declarations.length - 1] = { kind: "quot", infos: [...last.infos, info] };
-      } else {
-        declarations.push({ kind: "quot", infos: [info] });
+      reader.pendingQuot = [...reader.pendingQuot, info];
+      if (reader.pendingQuot.length === 4) {
+        declarations.push({ kind: "quot", infos: reader.pendingQuot });
+        reader.pendingQuot = [];
       }
     } else if ("inductive" in o) {
       const d = o.inductive;
@@ -202,6 +245,6 @@ export function parseExport(text: string): ExportFile {
     } else {
       throw new KernelError(`line ${lineNo}: unknown export object`);
     }
-  }
-  return { meta, declarations };
+    return declarations;
+  };
 }

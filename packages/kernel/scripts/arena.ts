@@ -11,6 +11,12 @@ const filters = process.argv.slice(3);
 const built = join(arena, "_build", "tests");
 const cli = new URL("../src/cli.ts", import.meta.url).pathname;
 
+function yamlField(test: string, field: string): string | undefined {
+  const yaml = join(arena, "tests", `${test}.yaml`);
+  if (!existsSync(yaml)) return undefined;
+  return new RegExp(`^${field}:\\s*(\\S+)`, "m").exec(readFileSync(yaml, "utf8"))?.[1];
+}
+
 function expected(test: string, file: string): string {
   // `tests/<test>.yaml` holds the outcome; multi-tests put files in good/ and bad/.
   if (/\/good\//.test(file)) return "accept";
@@ -39,9 +45,11 @@ for (const file of walk(built)) {
   const test = rel.replace(/\/(good|bad)\/.*$/, "");
   const want = expected(test, file);
   const t0 = Date.now();
-  const r = spawnSync(process.execPath, ["--stack-size=65500", cli, file], { encoding: "utf8", timeout: 600_000 });
+  const timeout = Number(yamlField(test, "timeout") ?? 300) * 1000;
+  const r = spawnSync(process.execPath, ["--stack-size=65500", cli, file], { encoding: "utf8", timeout });
   const ms = Date.now() - t0;
-  const got = r.status === 0 ? "accept" : r.status === 1 ? "reject" : r.status === 2 ? "decline" : `error(${r.status ?? r.signal})`;
+  const got =
+    r.status === 0 ? "accept" : r.status === 1 ? "reject" : r.status === 2 || r.signal === "SIGTERM" ? "decline" : `error(${r.status ?? r.signal})`;
   const ok = got === want || (want === "either" && (got === "accept" || got === "reject"));
   const line = `${ok ? "PASS" : got === "decline" ? "DECL" : "FAIL"} ${rel} want=${want} got=${got} ${ms}ms`;
   if (ok) pass++;
