@@ -65,3 +65,29 @@ export function nameToString(n: Name): string {
       return n.prefix.kind === "anonymous" ? `${n.num}` : `${nameToString(n.prefix)}.${n.num}`;
   }
 }
+
+/** Appends `suffix` to the last string component (`u` + `_1` = `u_1`). */
+export function appendAfter(n: Name, suffix: string): Name {
+  if (n.kind === "str") return strName(n.prefix, n.str + suffix);
+  return strName(n, suffix);
+}
+
+/** Replaces `prefix` at the start of `n` with `newPrefix`. */
+export function replacePrefix(n: Name, prefix: Name, newPrefix: Name): Name {
+  if (n === prefix) return newPrefix;
+  switch (n.kind) {
+    case "anonymous":
+      return n;
+    case "str":
+      return strName(replacePrefix(n.prefix, prefix, newPrefix), n.str);
+    case "num":
+      return numName(replacePrefix(n.prefix, prefix, newPrefix), n.num);
+  }
+}
+
+export function isPrefixOf(prefix: Name, n: Name): boolean {
+  for (let m: Name = n; ; m = m.prefix) {
+    if (m === prefix) return true;
+    if (m.kind === "anonymous") return false;
+  }
+}
