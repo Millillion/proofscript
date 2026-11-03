@@ -1,4 +1,4 @@
-import type { nat } from "./proofscript/index.ts";
+import type { Is, nat } from "./proofscript/index.ts";
 
 export type List<T> =
   | { readonly tag: "nil" }
@@ -8,8 +8,10 @@ export function length<T>(xs: List<T>): nat {
   return xs.tag === "nil" ? 0 : 1 + length(xs.tail);
 }
 
-//@ ensures r => length(r) === length(xs) + length(ys)
-export function append<T>(xs: List<T>, ys: List<T>): List<T> {
+// A postcondition is a refinement of the return type, using an ordinary predicate.
+const appendLength = <T>(r: List<T>, xs: List<T>, ys: List<T>) => length(r) === length(xs) + length(ys);
+
+export function append<T>(xs: List<T>, ys: List<T>): List<T> & Is<typeof appendLength, [typeof xs, typeof ys]> {
   return xs.tag === "nil" ? ys : { tag: "cons", head: xs.head, tail: append(xs.tail, ys) };
 }
 

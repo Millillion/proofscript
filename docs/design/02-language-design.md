@@ -1,6 +1,6 @@
 # ProofScript Language Design
 
-Status: **design draft v0.1** (2026-11-02). Implements the requirements in [01-requirements.md](01-requirements.md) (cited as R1–R22). Synthesizes [research/01–04](../research/).
+Status: **design draft v0.1** (2026-11-02). The logic, semantics and architecture here stand; the concrete syntax (§7) is superseded by [04-surface-syntax.md](04-surface-syntax.md). Implements the requirements in [01-requirements.md](01-requirements.md) (cited as R1–R22). Synthesizes [research/01–04](../research/).
 
 > **Thesis.** ProofScript is TypeScript plus a *ghost layer*: specifications, theorems, proofs and value-indexed types that live only in erasable positions. The ghost layer elaborates into a small, Lean-4-compatible kernel that is the sole root of trust. Ordinary TypeScript code is untouched; the subset of it that specs mention is *reflected* into the kernel with JavaScript's real semantics. Nothing TypeScript's own type checker concludes is ever trusted by a proof.
 
@@ -268,6 +268,8 @@ Every theorem and verified declaration has a **trust footprint**: the standard k
 
 ## 7. Concrete syntax
 
+> **Superseded (2026-11-02)** by [04-surface-syntax.md](04-surface-syntax.md): ProofScript is written entirely in TypeScript (types, `satisfies`, ordinary functions), with no new syntax. This section is kept as the design of possible future sugar.
+
 ### 7.1 The no-reinterpretation rule
 
 Every new construct is introduced by a **contextual keyword** and recognized **only where the same tokens could not be valid TypeScript** (R2), using the same techniques TypeScript used for `type`, `declare`, `abstract` and `satisfies`:
@@ -509,4 +511,4 @@ These are the decisions the design does not yet settle. Each will be resolved by
 5. **Heap reasoning surface.** Dynamic frames (Dafny) vs. ownership-flavoured permissions (Verus/Prusti), given that TS has no ownership types.
 6. **Classes, `this`, prototypes, getters** in the verifiable subset.
 7. **Tactic metaprogramming** — tactics written in ProofScript, with a quotation syntax for kernel terms.
-8. **Surface syntax and file extension.** See [04-surface-syntax.md](04-surface-syntax.md), which proposes valid TypeScript (`.ts` + `//@` annotations + `.proof.ts` proof modules) as the primary surface, with this document's dedicated syntax as optional later sugar. Original question: `.pts`/`.ptsx` (recommended; content mappers cannot claim `.ts`) vs. `.proof.ts`, and a comment-based "lite" mode for unrenamed `.ts` files.
+8. **Surface syntax and file extension.** **Decided (2026-11-02):** ProofScript is written entirely in TypeScript; see [04-surface-syntax.md](04-surface-syntax.md). Implementation code stays `.ts`; proofs go in `*.proof.ts`. Original question: `.pts`/`.ptsx` (recommended; content mappers cannot claim `.ts`) vs. `.proof.ts`, and a comment-based "lite" mode for unrenamed `.ts` files.

@@ -10,7 +10,7 @@ export function length_append<T>(xs: List<T>, ys: List<T>): Proof {
   );
 }
 
-// The same theorem as a term proof: induction is recursion, case analysis is `?:`.
+// The same theorem as a term proof: induction is recursion.
 export function length_append_term<T>(xs: List<T>, ys: List<T>): Proof {
   return prove(length(append(xs, ys)) === length(xs) + length(ys), () =>
     xs.tag === "nil"

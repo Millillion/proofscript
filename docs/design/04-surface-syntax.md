@@ -1,61 +1,98 @@
-# Surface Syntax: Dedicated Syntax vs. Valid TypeScript
+# Surface Syntax: ProofScript Is Written in TypeScript
 
-Status: **design note v0.1** (2026-11-02). Follows up [02-language-design.md](02-language-design.md), which assumed a dedicated `.pts` grammar. This note asks whether ProofScript can instead be **valid TypeScript from day one**, with its meaning supplied by the ProofScript checker alone. It answers yes, and recommends making that the primary surface.
+Status: **design note v0.2** (2026-11-02). Supersedes the concrete syntax in [02-language-design.md §7](02-language-design.md#7-concrete-syntax) and v0.1 of this note (which used `//@` comment annotations).
 
-Decision recorded: **kernel = our own Lean-4-compatible kernel in TypeScript, re-checked by Lean in CI** (design §12, question 1).
+Decisions recorded:
+- **Kernel:** our own Lean-4-compatible kernel in TypeScript, re-checked by Lean in CI.
+- **Surface:** the entire ProofScript type system is expressed in actual TypeScript: types, `satisfies`, and ordinary functions. No new syntax, and no comments carrying meaning.
 
 ## 1. Is it basically Lean's type system?
 
-**The kernel is exactly Lean 4's type theory**: dependent functions, a universe hierarchy, inductive families, an impredicative proof-irrelevant `Prop`, quotients, and the same axioms. That is deliberate. It is well understood, proved consistent relative to ZFC with inaccessible cardinals (Carneiro, 2019), has several independent checkers, and lets proofs be exported to Lean for re-checking (and, later, Lean libraries be imported).
+**The kernel is exactly Lean 4's type theory**: dependent functions, a universe hierarchy, inductive families, an impredicative proof-irrelevant `Prop`, quotients, and the same axioms. It is well understood, consistent relative to ZFC with inaccessible cardinals (Carneiro, 2019), has several independent checkers, and lets proofs be exported to Lean for re-checking.
 
-**The surface is not Lean.** Users write TypeScript types. The elaborator interprets them into the kernel (discriminated unions become inductive types, `number` becomes IEEE-754 binary64, and so on; design §4.1), and adds dependency where TypeScript has none (value indices, refinements, propositions). Universes, implicit arguments and most of what makes Lean intimidating are inferred and rarely seen. Other differences from Lean:
+**The surface is TypeScript.** The checker interprets TypeScript types into the kernel (discriminated unions become inductive types, `number` becomes IEEE-754 binary64, `T & R` becomes a refinement, and so on). Universes and implicit arguments are inferred. JavaScript keeps its real semantics: `number` is a float, `===` is JavaScript's `===`, and `int`/`nat` are proved refinements.
 
-- **Honest JavaScript semantics**: `number` is a float, `===` is JavaScript's `===`; `int`/`nat` are proved refinements (design §6.3).
-- **Modes and erasure** (exec/ghost/proof), because the code runs as JavaScript rather than through Lean's compiler.
-- **No type classes at first** (design §12, question 3).
-- **TypeScript's own type system keeps running unchanged** alongside, as an unsound but useful first check.
+## 2. What `tsc` checks, and what it can't
 
-So: Lean's logic, TypeScript's types and syntax, JavaScript's runtime semantics.
+Neither the dedicated `.pts` syntax of design §7 nor any other design gets `tsc` to verify ProofScript's *meaning*. That is always the ProofScript checker's job. What differs is how much of the *surface* `tsc` sees:
 
-## 2. The idea: types with a simple meaning to `tsc` and a precise meaning to ProofScript
+- **Dedicated `.pts` syntax:** `tsc` cannot even parse it. It would see only a generated "virtual TS" view, produced by ProofScript's own tooling through the TS 7.1 content-mapper or Volar plumbing, in which spec expressions are copied into dead code so that their names and types get checked. That checking is real, but it is indirect and depends on our tooling.
+- **Comment annotations (v0.1 of this note):** `tsc` sees nothing inside them.
+- **TypeScript-only (this note):** `tsc` checks everything natively, with no plumbing.
+  - Predicates are real functions, so their bodies are fully type-checked.
+  - Spec plumbing is type-checked too. `Is<typeof found, [typeof a, typeof key]>` is a `tsc` error if `found` doesn't accept those arguments.
+  - Rename, go-to-definition and find-references work across code and specs in every editor today.
 
-Every ProofScript construct can be written as valid TypeScript whose TS meaning is a **sound over-approximation** of its ProofScript meaning:
+## 3. The constraint that shapes the design
 
-| Written as | TypeScript sees | ProofScript sees |
-|---|---|---|
-| `nat` | `number` | `{ x: number // safe integer, x >= 0 }` |
-| `Vec<T, n>` (alias of `readonly T[]` with a `//@ where`) | `readonly T[]` | arrays whose length is exactly `n` |
-| `typeof n` in an index position | the type of `n` (`number`) | the singleton "exactly the value `n`" |
-| `Even<k>` (an `interface` + `declare namespace`) | an opaque type | an inductive family of propositions |
-| `Plus<k, 2>` | `number` | the value `k + 2` |
-| `prove(stmt, proof)` returning `Proof` | a function returning an opaque value | the theorem "∀ parameters, `stmt`" |
-| `//@ requires P` | a comment | a precondition |
+TypeScript's grammar has two worlds: **types**, which are erased, and **expressions**, which run. No position in TypeScript holds an arbitrary expression *and* is erased.
 
-The invariant behind the table is the **refinement principle**: *the ProofScript meaning of every type is a subset of its TypeScript meaning.* Consequences:
+The bridges between the worlds are few:
 
-- Everything TypeScript checks remains a valid (weaker) check, so nothing ProofScript says contradicts `tsc`.
-- TypeScript accepts every ProofScript program, because ProofScript only adds information TS ignores.
-- Erasure is trivial. Annotations are comments, type-only constructs are erased by every TS tool, and implementation modules use `import type` only, so they have no runtime dependency on ProofScript (R4, R6).
+- **`typeof x` and `typeof x.y`**, which refer to values from inside types;
+- **`satisfies`**, which attaches a type to an expression and erases to the bare expression;
+- **literal types**, which are already singleton types (`3`, `"nil"`).
 
-`typeof n` deserves a note. TypeScript already gives `typeof n` a singleton type when it can: `const n = 3` has `typeof n` = `3`. ProofScript does the same thing for *every* `n`, which is precisely a dependent type. Likewise, a type parameter `n extends nat` ranges over numeric literal types in TS; literal types are singleton types, so ProofScript reads it as a ghost value parameter. These readings are refinements of TypeScript's own, not reinterpretations.
+The design uses exactly these three. Specs are types. The predicates inside specs are ordinary TypeScript functions, referred to with `typeof`. Ghost statements are `satisfies` statements. Proofs are ordinary code in proof modules, which ship nowhere.
 
-## 3. A working example in valid TypeScript
+## 4. The design
 
-The files in [`embedded/`](embedded/) are real. Against stock TypeScript 5.9 with `strict`, `noUnusedLocals`, `noUnusedParameters`, `erasableSyntaxOnly` and `verbatimModuleSyntax`, `tsc` reports **zero errors**, and `node main.ts` runs them directly under Node 24's built-in type stripping, with no loader and no build step.
+### 4.1 Refinements, preconditions, postconditions: `T & R`
 
-### 3.1 Implementation code with specs (`list.ts`, `search.ts`)
+A refinement is an intersection. Every refinement type `R` from the `proofscript` package is `unknown` to TypeScript, so `T & R` is just `T` to `tsc`. To ProofScript, `T & R` is `{ x: T // R holds of x }`.
 
 ```ts
-import type { int } from "proofscript";
+import type { Is, Le, Length, Lt, int, nat } from "proofscript";
 
-//@ requires isSorted(a)
-//@ ensures r => (r >= 0 ==> a[r] === key) && (r < 0 ==> !a.includes(key))
-export function binarySearch(a: readonly int[], key: int): int {
+export function isSorted(a: readonly int[]): boolean {            // an ordinary, executable predicate
+  return a.every((x, i) => i === 0 || a[i - 1] <= x);
+}
+export type Sorted = readonly int[] & Is<typeof isSorted>;          // refinement by a predicate
+
+export type Vec<T, n extends nat> = readonly T[] & Length<n>;       // value-indexed type
+
+export function get<T>(xs: readonly T[], i: nat & Lt<typeof xs.length>): T {  // relational precondition
+  return xs[i];
+}
+```
+
+- **A refined parameter type is a precondition**, and **a refined return type is a postcondition** (Liquid Types' insight, in TypeScript's syntax):
+
+  ```ts
+  const found = (r: int, a: readonly int[], key: int) => (r >= 0 ? a[r] === key : !a.includes(key));
+
+  export function binarySearch(a: Sorted, key: int): int & Is<typeof found, [typeof a, typeof key]> { … }
+  ```
+
+- Built-in refinements cover common facts (`Lt`, `Le`, `Gt`, `Ge`, `Length`). Anything else is `Is<typeof pred, Args>` with an ordinary TS predicate. Predicates are real code, so they are also usable as runtime checks and in tests.
+- **Bounded quantifiers are just `every`/`some`.** ProofScript reflects `Array.prototype.every` with its real semantics, so `a.every((x, i) => …)` *is* "∀ i < a.length". Unbounded quantifiers (`forall`) are needed only in proof modules.
+
+### 4.2 Value indices: `typeof x` and literal types
+
+- A type parameter `n extends nat` ranges over numeric literal types. Literal types *are* singletons, so ProofScript reads `n` as a ghost value parameter.
+- `typeof x` in an index or refinement position means "exactly the value `x`". TypeScript already does this when it can (`const n = 3` gives `typeof n` = `3`); ProofScript does it for every `x`.
+
+Both readings *refine* TypeScript's own rather than reinterpret it.
+
+```ts
+export function replicate<T>(n: nat, x: T): Vec<T, typeof n> { … }      // depends on a runtime argument
+export function zip<A, B, n extends nat>(xs: Vec<A, n>, ys: Vec<B, n>): Vec<[A, B], n> { … }
+```
+
+Arithmetic on indices uses type operators: `Vec<T, Plus<n, 1>>`.
+
+### 4.3 Ghost statements: `satisfies`
+
+`e satisfies R;` as a statement is an **assertion**: the checker must prove `R` holds of `e` here. At the top of a loop body it is a **loop invariant**. `e satisfies Decreases` there is the **termination measure**. TypeScript type stripping erases each one to a bare expression statement (`lo;`), which has no effect.
+
+```ts
+export function binarySearch(a: Sorted, key: int): int & Is<typeof found, [typeof a, typeof key]> {
   let lo = 0, hi = a.length;
   while (lo < hi) {
-    //@ invariant 0 <= lo && lo <= hi && hi <= a.length
-    //@ invariant forall((i: nat) => (i < lo || (hi <= i && i < a.length)) ==> a[i] !== key)
-    //@ decreases hi - lo
+    lo satisfies nat & Le<typeof hi>;                                         // invariant
+    hi satisfies nat & Le<typeof a.length>;                                   // invariant
+    key satisfies Is<typeof notInOuter, [typeof a, typeof lo, typeof hi]>;    // invariant
+    hi - lo satisfies Decreases;                                              // termination measure
     const mid = lo + Math.floor((hi - lo) / 2);
     if (a[mid] < key) lo = mid + 1;
     else if (a[mid] > key) hi = mid;
@@ -65,27 +102,24 @@ export function binarySearch(a: readonly int[], key: int): int {
 }
 ```
 
-### 3.2 Dependent and refinement types (`vec.ts`)
+Node's type stripping produces this (whitespace kept, so stack traces keep their positions):
 
-```ts
-import type { Indexed, nat } from "proofscript";
-
-//@ where xs => xs.length === n
-export type Vec<T, n extends nat> = Indexed<readonly T[], n>;
-
-//@ where i => i < n
-export type Fin<n extends nat> = Indexed<nat, n>;
-
-export function replicate<T>(n: nat, x: T): Vec<T, typeof n> { … }
-export function zip<A, B, n extends nat>(xs: Vec<A, n>, ys: Vec<B, n>): Vec<[A, B], n> { … }
-export function get<T, n extends nat>(xs: Vec<T, n>, i: Fin<n>): T { return xs[i]; }  // no bounds check needed
+```js
+  while (lo < hi) {
+    lo                              ;
+    hi                                    ;
+    key                                                                  ;
+    hi - lo                    ;
+    const mid = lo + Math.floor((hi - lo) / 2);
 ```
 
-`zip([1, 2, 3], ["x"])` type-checks in TypeScript (to `tsc`, a `Vec` is just an array) and runs, producing `[[1,"x"],[2,null],[3,null]]` (JSON prints the `undefined`s as `null`). **ProofScript rejects that call**: no single `n` makes both arguments `Vec<_, n>`.
+`null satisfies Use<typeof lemma, [typeof a, typeof i]>` instantiates a lemma at a point in the code, to give the checker a fact it can't find on its own.
 
-### 3.3 Theorems (`list.proof.ts`)
+Rules: the subject of a `satisfies` statement must be a local variable, a literal, or arithmetic on them, so that erasure leaves no observable effect (no property reads, which could run getters). A linter preset will mark these statements as intentional for `no-unused-expressions`.
 
-Proofs live in **proof modules**, `*.proof.ts`, the way tests live in `*.test.ts`: valid TypeScript, type-checked with the project, never imported by production code, so never shipped.
+### 4.4 Theorems: proof modules
+
+Proofs live in `*.proof.ts` files, the way tests live in `*.test.ts`. They are type-checked with the project, never imported by production code, and never shipped. They import the inert runtime part of the `proofscript` package (a dev dependency, like a test framework).
 
 ```ts
 import { by, congrArg, induction, prove, rfl, simp, type nat, type Proof } from "proofscript";
@@ -109,9 +143,9 @@ export function length_append_term<T>(xs: List<T>, ys: List<T>): Proof {
 }
 ```
 
-Because the statement is real TypeScript, `tsc` type-checks it, and rename and go-to-definition work on `length` and `append` inside theorems with no ProofScript plugin at all. As a bonus, **a theorem run as plain TS is a property test**: `length_append(someList, otherList)` evaluates the statement on those inputs and throws if it is false. ProofScript proves it for every input.
+Run as plain TypeScript, a theorem is a **property test**: `length_append(a, b)` evaluates the statement on those inputs and throws if it's false. ProofScript proves it for all inputs.
 
-### 3.4 Inductive propositions (`even.proof.ts`)
+### 4.5 Inductive propositions: Curry–Howard in TypeScript types
 
 ```ts
 import { by, exact, induction, simp, type nat, type Plus, type Prop } from "proofscript";
@@ -123,7 +157,7 @@ export declare namespace Even {
   function step<k extends nat>(h: Even<k>): Even<Plus<k, 2>>;
 }
 
-// Curry–Howard: when the claim is a type, it is the return type.
+// When the claim is a type, it is the return type.
 export function even_add<a extends nat, b extends nat>(ha: Even<a>, hb: Even<b>): Even<Plus<a, b>> {
   return by(induction(ha, {
     zero: () => exact(hb),
@@ -132,57 +166,48 @@ export function even_add<a extends nat, b extends nat>(ha: Even<a>, hb: Even<b>)
 }
 ```
 
-Tactics that introduce hypotheses (Lean's `induction … with | step h ih => …`) take **callbacks whose parameters name the hypotheses**, so every name in a proof is an ordinary TypeScript binding.
+`interface` and `declare namespace` emit no JavaScript. Tactics that introduce hypotheses take callbacks whose parameters name them, so every name in a proof is an ordinary TypeScript binding.
 
-## 4. Embedded-mode rules
+## 5. Verified prototype
 
-1. **Annotations** are line comments `//@ <keyword> …` or block comments `/*@ <keyword> … */`, where `<keyword>` is from a closed set: `requires`, `ensures`, `decreases`, `reads`, `modifies`, `throws`, `invariant`, `assert`, `assume`, `ghost`, `proof`, `where`. Anything else after `//@` is ignored, so existing `//@ts-ignore`, `//@ts-expect-error` and legacy `//@ sourceMappingURL=` comments keep their meaning (R2). JSDoc tags are *not* used: JSDoc already defines `@requires` (a module dependency) and `@throws`, so reusing them would reinterpret existing comments.
-2. **Spec expressions** inside annotations are TypeScript expressions plus `==>` and `<==>` (design §6.1). In proof modules, which are real code, `implies(p, q)` is the equivalent.
-3. **The `proofscript` package** provides types (`nat`, `int`, `Indexed`, `Plus`, `Prop`, `Proof`, …) and inert runtime functions (`prove`, `by`, tactics, `forall`, …). The checker recognizes these by *symbol resolution* (they must resolve to the `proofscript` package), not by name, so a user's own function called `prove` is never misread.
-4. **Implementation modules** import ProofScript only with `import type`. **Proof modules** (`*.proof.ts`) may import its runtime surface; they are dev-only, like test files.
-5. **Ghost code in implementation modules** lives in annotations: `//@ ghost const before = total`, `//@ assert lo < hi`, `//@ proof lemma(a, i)`.
-6. **Lemmas referenced only from annotations** are imported with an annotation, `//@ import { lemma } from "./x.proof.ts"`, so `noUnusedLocals` is not tripped and production code gains no import.
+[`typescript-only/`](typescript-only/) contains every example above as real files.
 
-## 5. Trade-offs
+- **`tsc` 5.9 reports zero errors** with `strict`, `noUnusedLocals`, `noUnusedParameters`, `erasableSyntaxOnly` and `verbatimModuleSyntax` on.
+- **`node main.ts` runs the files directly** under Node 24's built-in type stripping, with no loader and no build step.
+- The only comments in the code are explanatory prose. None of them carries meaning.
+- `main.ts` ends with two calls that `tsc` accepts and that run, but that ProofScript rejects:
+  - `zip([1, 2, 3], ["x"])`: the lengths differ. It produces `[[1,"x"],[2,null],[3,null]]` (JSON prints the `undefined`s as `null`).
+  - `get([10, 20, 30], 3)`: `3 < 3` is false. It returns `undefined` where TS promised a `number`.
 
-| | Embedded (valid TS) | Dedicated syntax (`.pts`) |
-|---|---|---|
-| Works today with `tsc`, Node, Deno, Bun, Vite, esbuild, webpack | **Yes, demonstrated** | Needs a loader, plugins, and the TS 7.1 content-mapper or Volar integration |
-| Prettier, ESLint, Biome, oxc, test runners, coverage, GitHub highlighting | **Unchanged** | Each needs ProofScript support (TypeScript needed years and Microsoft's weight to get this) |
-| Parser to build and maintain | **None** (reuse TypeScript's) | A fork of TypeScript's parser, tracking every TS release |
-| Superset property (R1–R3) | **Trivial**: no syntax is added at all | Must be engineered and tested (design §7.1) |
-| Theorems and proofs | Real TS: type-checked, renameable, runnable as property tests | Real syntax: shortest form |
-| Specs inside implementation code | Comments: TS does not check them; editor support comes from the ProofScript plugin | Syntax: TS-checked through the virtual TS view |
-| Index arithmetic | `Vec<T, Plus<n, 1>>` | `Vec<T, n + 1>` |
-| Reads like | TypeScript with annotations (Liquid Haskell, ACSL, JML, Python's typing) | A new language (Dafny, Verus, Lean) |
+## 6. The refinement principle
 
-The embedded form costs some concision in theorem-heavy code and puts in-body specs in comments. In return it removes the largest engineering risks of the plan (parser fork, loader, dependence on the TS 7.1 beta API, ecosystem tooling) and makes adoption literally zero-cost: add a `//@ ensures` line to an existing `.ts` file and run `proofscript check`.
+**The ProofScript meaning of every type is a subset of its TypeScript meaning.** So:
 
-There is direct precedent in TypeScript's own history. TypeScript ships two surfaces over one checker: `.ts` syntax, and JSDoc annotations in plain `.js` files (`checkJs`). The JSDoc surface is what let many projects adopt types without a build step, and some (Svelte, in 2023) moved their own source to it.
+- `tsc` accepts every ProofScript program, and its checking remains valid, just weaker.
+- Every ProofScript program is a TypeScript program, with no syntax added. This is the strongest possible form of the superset requirement (R1–R3).
+- Implementation modules import ProofScript with `import type` only, so there is no runtime dependency (R6). Ghost statements erase to no-ops (R4).
+- Every tool works unchanged: `tsc`, Node, Deno, Bun, Vite, esbuild, webpack, Prettier, ESLint, Biome, test runners, coverage, GitHub highlighting.
+- No parser to fork, no loader, no dependence on the TypeScript 7.1 beta API.
+- The ProofScript checker recognizes its types by **symbol resolution** (they must resolve to the `proofscript` package), never by name, so user types named `Is` or `Le` are never misread.
 
-## 6. Recommendation
+## 7. Costs, honestly
 
-1. **Make embedded mode the primary surface and build it first.** Every ProofScript program is a TypeScript program, with zero added syntax. This is the strongest possible form of the superset requirement.
-2. **Keep the dedicated syntax as optional sugar for later**, designed as in design §7, desugaring to exactly the same core. Decide on it once embedded mode has real users and we know which parts are too noisy (theorem statements and index arithmetic are the likely candidates). Because both surfaces elaborate to the same kernel terms, adding it later is front-end work only.
-3. **Front end**: use the TypeScript compiler's JavaScript API (6.x) for parsing and symbol resolution, which is free and exact. Like everything outside the kernel, it is untrusted.
-
-If adopted, the roadmap's phase 0 shrinks to: the `proofscript` types package, annotation extraction, and a `proofscript check` CLI built on the TS API. The parser fork, loader and content-mapper spike are deferred with the sugar.
-
-## 7. File extensions
-
-With embedded mode, the question mostly dissolves:
-
-- **Implementation code stays `.ts` / `.tsx` / `.mts` / `.cts`** (and `.js` with the same `//@` annotations).
-- **Proof modules use `.proof.ts`**, mirroring `.test.ts` / `.spec.ts`. A double extension is only safe because the file is valid TypeScript: every tool that globs `*.ts` handles it. It would be a poor choice for files containing new syntax, which those tools would choke on.
-
-If the dedicated sugar is ever built, the candidates are:
-
-| Extension | Notes |
+| Cost | Mitigation |
 |---|---|
-| **`.pts` / `.ptsx` / `.mpts` / `.cpts`** | Recommended. Parallels `.ts`/`.tsx`/`.mts`/`.cts`. Not registered in GitHub Linguist. Historically used by Pro Tools 5–6 session files and some point-cloud data; low collision risk for source code. |
-| `.psts` | Unregistered; less obvious, awkward to say. |
-| `.prfts` | Unregistered; unreadable. |
-| `.vts` ("verified TS") | Collides with VTK structured-grid files. |
-| `.tsp` | Taken by TypeSpec (and TSPLIB). |
-| `.ps` | PostScript. |
-| `.ts` + a `// @proofscript` pragma | Impossible for new syntax: every tool would parse the file as TS and fail. |
+| Spec predicates must be **named functions**, since a type can't contain an inline expression. | Named predicates are reusable, testable and usable as runtime validators. Built-in refinements (`Lt`, `Length`, …) cover simple facts with no function at all. |
+| Postconditions are verbose: `int & Is<typeof found, [typeof a, typeof key]>`. | A shorter form where the predicate receives the function's parameters implicitly (`Ensures<typeof found>`) is possible; `tsc` then can't check the argument list, but ProofScript does. |
+| Index arithmetic: `Plus<n, 1>` instead of `n + 1`. | Rarely needed outside theorem-heavy code; refinements cover most program verification. |
+| `x satisfies R;` statements are unusual. | They are short, real TypeScript and erase to nothing. A lint preset handles `no-unused-expressions`. |
+| Module-level predicates referenced only via `typeof` remain in the emitted JS (a few small functions per module). | Put them in a companion module and import them with `import type` to emit nothing. Most bundlers tree-shake them anyway. |
+| To `tsc`, `Sorted` is just `readonly int[]`, so `tsc` never forces you through `isSorted`. | Deliberate: ProofScript does that checking, without casts. Proofs never trust `as` casts (R17). |
+
+## 8. File extensions
+
+The question dissolves: implementation code stays `.ts` / `.tsx` / `.mts` / `.cts` (or `.js` with JSDoc types), and proofs go in `*.proof.ts`, mirroring `*.test.ts`. A double extension is safe precisely because the files are valid TypeScript.
+
+## 9. Open questions
+
+1. **Postcondition shorthand.** Explicit `Is<typeof post, [typeof a, typeof key]>` (fully `tsc`-checked) vs. implicit `Ensures<typeof post>` (shorter).
+2. **Theorem statements.** `prove(boolean, proof)` (statement as an expression, runnable as a property test) vs. propositions as types throughout (`Eq<…>`, `And<…>`), which is more uniform with §4.5 but harder to read.
+3. **Frames and mutation.** How `reads`/`modifies`/`old(e)` are expressed as types, e.g. `Modifies<typeof a>` on the return type and `Old<typeof x>` in predicates.
+4. **Equality, numbers, termination and trust footprints** carry over unchanged from design §4–§6. Only the syntax changed.
