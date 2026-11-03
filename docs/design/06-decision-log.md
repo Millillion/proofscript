@@ -169,3 +169,15 @@ When a decision changes, update its entry and note the date rather than deleting
 - If we **copy or translate Lean source code** (e.g. port an algorithm line by line, or vendor Lean files), those parts must keep Apache-2.0 terms: include the license text, keep copyright notices and any NOTICE file, and mark our modifications. Apache-2.0 code can be combined with this repository's MIT license.
 - **Trademark:** "Lean" is a trademark of the Lean FRO. Descriptive use ("Lean-compatible kernel", "exports proofs that Lean re-checks") is fine. Anything implying ProofScript is official, affiliated or endorsed is not, without permission.
 - **Alternative:** relicense ProofScript as Apache-2.0 or dual MIT/Apache-2.0 (as Rust does), which simplifies mixing in Lean-derived code and adds Apache's explicit patent grant. Worth considering before the first release.
+
+### D28. Lean4Lean via Lasm as a second kernel — **Decided** (2026-11-03)
+- **Chosen:** keep our own TypeScript kernel (D1) with Lean re-checking in CI. Add a spike to run Lean4Lean (a Lean 4 kernel written in Lean, Apache-2.0, partially verified against a formal theory of Lean) compiled to WebAssembly with Lasm, as an optional second kernel and a possible future replacement.
+- **Alternatives:**
+  - *Lean4Lean via Lasm as the primary kernel*: no kernel to write, and it inherits Lean4Lean's verification as that matures. Costs a Lean toolchain in the build, WebAssembly size and speed in the editor, cross-language debugging, and a kernel TS contributors can't easily work on. It is also derived from Lean's C++ kernel, so it is not an independent second opinion.
+  - *Write our kernel in Lean and verify it ourselves*: a multi-year research effort (cf. MetaCoq, Lean4Lean), and verification proves conformance to the rules, not consistency of the logic.
+  - *Verify our TypeScript kernel in ProofScript itself*: long term.
+
+### D29. Syntax review checkpoint — **Decided** (2026-11-03)
+- Implementation proceeds on the Default decisions. Jordan reviews all ProofScript types and syntax at the end of milestone M3 ([07](07-implementation-plan.md)), when a real theorem library written in the syntax exists. No public release before that review.
+- Surface names and encodings are kept in one module of the checker (the surface table), and migrations are done by codemods over the TypeScript AST, so syntax changes stay cheap.
+- Semantic decisions D17–D22 are costlier to change later and are flagged for priority review.
