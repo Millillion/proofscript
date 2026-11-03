@@ -182,7 +182,7 @@ When a decision changes, update its entry and note the date rather than deleting
 - Surface names and encodings are kept in one module of the checker (the surface table), and migrations are done by codemods over the TypeScript AST, so syntax changes stay cheap.
 - Semantic decisions D17–D22 are costlier to change later and are flagged for priority review.
 
-### D30. Lean as an untrusted proof engine — **Default** (2026-11-03)
+### D30. Lean as an untrusted proof engine — **Decided** (2026-11-03)
 - **Chosen:** for M2–M3, ProofScript translates theorem statements, reflected definitions and tactic scripts into Lean source, and uses Lean's elaborator and tactics (`simp`, `omega`, `decide`, `grind`, `induction`, …) as an **untrusted** proof engine. The proof terms Lean produces are exported (lean4export) and checked by ProofScript's own kernel, which remains the only trusted component. Checked proofs are cached as certificates, so `proofscript check` on an unchanged project replays certificates through the kernel without needing Lean installed.
 - **Why:** Lean's tactic framework represents a decade of work; reproducing `simp`/`omega` in TypeScript before anything works would delay real use by many months. This gives ProofScript Lean's exact tactic behaviour immediately ("behaves like Lean", D13/05), while the trust story is unchanged: Lean here is in the same position as an SMT solver in D3.
 - **Trusted:** the TS → Lean translation of *definitions* (reflection), until the adequacy work of phase 3. The translation of *proofs* is untrusted (the kernel checks the result).
@@ -190,3 +190,11 @@ When a decision changes, update its entry and note the date rather than deleting
 - **Alternatives:**
   - *Native TypeScript elaborator and tactics from the start* (the original D25 plan): no Lean dependency, runs everywhere, but months before `simp`/`omega`-level automation.
   - *Hybrid* (the long-term plan either way): native TS implementations of the most common tactics replace the Lean engine incrementally; the Lean engine remains an optional power tool.
+
+### D31. Replacing the Lean dependency: WebAssembly via Lasm — **Decided** (2026-11-03)
+- **Chosen:** keep Lean as a proving dependency (D30) while the language, syntax, types, proof generation and proof checking are proven out. Then replace the native Lean process with Lean's own elaborator and tactics compiled to WebAssembly (via Lasm), running in-process in Node, so proving needs nothing installed. A native TypeScript fast path for simple goals may come later, for editor latency, but is not the main route.
+- **Why WebAssembly over a TypeScript rewrite:** Lean's elaborator and tactic framework are hundreds of thousands of lines refined over years. Compiling them keeps exact Lean behaviour, Mathlib compatibility and every future tactic; a rewrite would take years and always lag.
+- **What Lasm needs (it currently excludes runtime elaboration by design):** the C++ runtime pieces the elaborator uses (and a kernel, possibly ProofScript's own through a host import); loading `.olean` environments into WebAssembly memory (size, memory and startup are the main risks); the IR interpreter for user tactics/macros/`#eval`; and task-based concurrency. See [08-lean-in-wasm.md](08-lean-in-wasm.md).
+- **Engineering rule now:** the Lean boundary in `packages/checker/src/lean.ts` stays narrow (Lean source in; exported proofs and messages out), so the engine is a drop-in replacement.
+- **Version alignment:** Lasm supports exactly Lean 4.35.0; ProofScript pins 4.34.1 (the Lean Kernel Arena's version). Move to a shared version.
+- **Alternatives:** a full TypeScript elaborator and tactic suite (D25's original plan); keeping the native Lean dependency permanently.

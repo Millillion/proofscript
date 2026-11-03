@@ -13,6 +13,7 @@ ProofScript is in the research and design stage. There is no code to try yet. Wa
 - [Lean correspondence](docs/design/05-lean-correspondence.md): how each Lean 4 feature is written in ProofScript
 - [Decision log](docs/design/06-decision-log.md): every decision so far, with the alternatives considered
 - [Implementation plan and evidence strategy](docs/design/07-implementation-plan.md)
+- [Lean's elaborator in WebAssembly](docs/design/08-lean-in-wasm.md): the planned replacement for the Lean dependency
 - Research: [why TypeScript won](docs/research/01-typescript-success-principles.md), [verification prior art](docs/research/02-verification-prior-art.md), [foundations and soundness](docs/research/03-foundations-and-soundness.md), [syntax and tooling](docs/research/04-syntax-and-tooling.md)
 
 In the meantime, [Lasm](https://github.com/Millillion/lasm) is the working project for formally verified code in the JavaScript world. It compiles Lean 4 to WebAssembly for servers, serverless and edge functions, and the browser.
