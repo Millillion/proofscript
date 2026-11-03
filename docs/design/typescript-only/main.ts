@@ -1,7 +1,7 @@
 import { append, fromArray, length } from "./list.ts";
 import { binarySearch, isSorted } from "./search.ts";
 import { get, replicate, zip } from "./vec.ts";
-import { length_append } from "./list.proof.ts";
+import { length_append } from "./list.ts";
 
 const xs = fromArray([1, 2, 3]);
 console.log("length(append) =", length(append(xs, fromArray([4, 5]))));

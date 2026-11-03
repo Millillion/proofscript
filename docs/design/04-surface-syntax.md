@@ -33,7 +33,7 @@ The bridges between the worlds are few:
 - **`satisfies`**, which attaches a type to an expression and erases to the bare expression;
 - **literal types**, which are already singleton types (`3`, `"nil"`).
 
-The design uses exactly these three. Specs are types. The predicates inside specs are ordinary TypeScript functions, referred to with `typeof`. Ghost statements are `satisfies` statements. Proofs are ordinary code in proof modules, which ship nowhere.
+The design uses exactly these three. Specs are types. The predicates inside specs are ordinary TypeScript functions, referred to with `typeof`. Ghost statements are `satisfies` statements. Proofs are ordinary functions that are never called.
 
 ## 4. The design
 
@@ -65,7 +65,7 @@ export function get<T>(xs: readonly T[], i: nat & Lt<typeof xs.length>): T {  //
   ```
 
 - Built-in refinements cover common facts (`Lt`, `Le`, `Gt`, `Ge`, `Length`). Anything else is `Is<typeof pred, Args>` with an ordinary TS predicate. Predicates are real code, so they are also usable as runtime checks and in tests.
-- **Bounded quantifiers are just `every`/`some`.** ProofScript reflects `Array.prototype.every` with its real semantics, so `a.every((x, i) => …)` *is* "∀ i < a.length". Unbounded quantifiers (`forall`) are needed only in proof modules.
+- **Bounded quantifiers are just `every`/`some`.** ProofScript reflects `Array.prototype.every` with its real semantics, so `a.every((x, i) => …)` *is* "∀ i < a.length". Unbounded quantifiers (`forall`) are needed only in theorems.
 
 ### 4.2 Value indices: `typeof x` and literal types
 
@@ -117,24 +117,27 @@ Node's type stripping produces this (whitespace kept, so stack traces keep their
 
 Rules: the subject of a `satisfies` statement must be a local variable, a literal, or arithmetic on them, so that erasure leaves no observable effect (no property reads, which could run getters). A linter preset will mark these statements as intentional for `no-unused-expressions`.
 
-### 4.4 Theorems: proof modules
+### 4.4 Theorems: anywhere, as in Lean
 
-Proofs live in `*.proof.ts` files, the way tests live in `*.test.ts`. They are type-checked with the project, never imported by production code, and never shipped. They import the inert runtime part of the `proofscript` package (a dev dependency, like a test framework).
+Theorems are ordinary functions and can live **in the same module as the code they are about, or in separate modules**; it makes no difference to the checker ([D13](06-decision-log.md#d13-where-theorems-live--decided-2026-11-02)). `*.proof.ts` is just an optional naming convention for proof-only modules.
 
 ```ts
-import { by, congrArg, induction, prove, rfl, simp, type nat, type Proof } from "proofscript";
-import { append, length, type List } from "./list.ts";
+// list.ts
+import { by, induction, prove, simp, type Is, type nat, type Proof, type Simp } from "proofscript";
 
-// A theorem is a function: parameters are universally quantified,
-// and `prove` states the claim as an ordinary boolean expression.
-export function length_append<T>(xs: List<T>, ys: List<T>): Proof {
+export function length<T>(xs: List<T>): nat { … }
+export function append<T>(xs: List<T>, ys: List<T>): List<T> & Is<typeof appendLength, [typeof xs, typeof ys]> { … }
+
+// A theorem is a function: parameters are universally quantified, and `prove` states
+// the claim as an ordinary boolean expression. `Proof & Simp` is Lean's `@[simp] theorem`.
+export function length_append<T>(xs: List<T>, ys: List<T>): Proof & Simp {
   return prove(
     length(append(xs, ys)) === length(xs) + length(ys),
     by(induction(xs), simp(length, append)),
   );
 }
 
-// The same theorem as a term proof: induction is recursion.
+// The same fact as a term proof: induction is recursion.
 export function length_append_term<T>(xs: List<T>, ys: List<T>): Proof {
   return prove(length(append(xs, ys)) === length(xs) + length(ys), () =>
     xs.tag === "nil"
@@ -143,7 +146,9 @@ export function length_append_term<T>(xs: List<T>, ys: List<T>): Proof {
 }
 ```
 
-Run as plain TypeScript, a theorem is a **property test**: `length_append(a, b)` evaluates the statement on those inputs and throws if it's false. ProofScript proves it for all inputs.
+At runtime, theorems are never called, so no ProofScript code ever executes. A module containing theorems imports the `proofscript` package, which is tiny, inert and side-effect free, so bundlers drop it along with the unreferenced theorem functions. Run as plain TypeScript, a theorem is a **property test**: `length_append(a, b)` evaluates the statement on those inputs and throws if it's false. ProofScript proves it for all inputs.
+
+See [05-lean-correspondence.md](05-lean-correspondence.md) for the full Lean ↔ ProofScript mapping.
 
 ### 4.5 Inductive propositions: Curry–Howard in TypeScript types
 
@@ -185,7 +190,7 @@ export function even_add<a extends nat, b extends nat>(ha: Even<a>, hb: Even<b>)
 
 - `tsc` accepts every ProofScript program, and its checking remains valid, just weaker.
 - Every ProofScript program is a TypeScript program, with no syntax added. This is the strongest possible form of the superset requirement (R1–R3).
-- Implementation modules import ProofScript with `import type` only, so there is no runtime dependency (R6). Ghost statements erase to no-ops (R4).
+- No ProofScript code ever runs: specs are types, ghost statements erase to no-ops (R4), and theorems are never called. Modules without theorems import ProofScript with `import type` only (R6).
 - Every tool works unchanged: `tsc`, Node, Deno, Bun, Vite, esbuild, webpack, Prettier, ESLint, Biome, test runners, coverage, GitHub highlighting.
 - No parser to fork, no loader, no dependence on the TypeScript 7.1 beta API.
 - The ProofScript checker recognizes its types by **symbol resolution** (they must resolve to the `proofscript` package), never by name, so user types named `Is` or `Le` are never misread.
@@ -203,11 +208,8 @@ export function even_add<a extends nat, b extends nat>(ha: Even<a>, hb: Even<b>)
 
 ## 8. File extensions
 
-The question dissolves: implementation code stays `.ts` / `.tsx` / `.mts` / `.cts` (or `.js` with JSDoc types), and proofs go in `*.proof.ts`, mirroring `*.test.ts`. A double extension is safe precisely because the files are valid TypeScript.
+The question dissolves: ProofScript code is TypeScript, so it uses `.ts` / `.tsx` / `.mts` / `.cts`. `*.proof.ts` (or `*.ps.ts`) is an optional convention for proof-only modules, and is safe precisely because such files are still `.ts` to every tool. `.ps` itself is ruled out: it would break every TypeScript tool, and it is PostScript ([D7](06-decision-log.md#d7-ps-as-an-extension--default)).
 
-## 9. Open questions
+## 9. Decisions and alternatives
 
-1. **Postcondition shorthand.** Explicit `Is<typeof post, [typeof a, typeof key]>` (fully `tsc`-checked) vs. implicit `Ensures<typeof post>` (shorter).
-2. **Theorem statements.** `prove(boolean, proof)` (statement as an expression, runnable as a property test) vs. propositions as types throughout (`Eq<…>`, `And<…>`), which is more uniform with §4.5 but harder to read.
-3. **Frames and mutation.** How `reads`/`modifies`/`old(e)` are expressed as types, e.g. `Modifies<typeof a>` on the return type and `Old<typeof x>` in predicates.
-4. **Equality, numbers, termination and trust footprints** carry over unchanged from design §4–§6. Only the syntax changed.
+Every choice in this note, with the alternatives considered, is recorded in the [decision log](06-decision-log.md) (D5–D16) for review.

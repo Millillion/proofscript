@@ -1,74 +1,69 @@
 # ProofScript Roadmap
 
-Status: **draft v0.1** (2026-11-02). Implements [02-language-design.md](02-language-design.md).
+Status: **draft v0.2** (2026-11-02). Updated for the TypeScript-only surface ([04](04-surface-syntax.md)) and the decisions in the [decision log](06-decision-log.md).
 
 ## Ordering principle: kernel first
 
-[research/04](../research/04-syntax-and-tooling.md) proposes starting with a Dafny-style contract checker backed by Z3, then adding the kernel. This roadmap reverses that: **the kernel and the ghost layer come first, and everything else elaborates into them.**
+The kernel and theorem proving come first, and everything else elaborates into them ([D4](06-decision-log.md#d4-build-order-kernel-first--default)):
 
-Reasons:
+1. **Soundness can't be retrofitted.** If contracts were first discharged by a trusted SMT pipeline, every later feature would be built on a path that must eventually be ripped out (R15).
+2. **It matches the core ambition**: theorems and proofs in TypeScript, behaving like Lean.
+3. **Contracts are just theorems.** Refined parameter and return types, invariants and assertions all elaborate into kernel propositions.
 
-1. **Soundness can't be retrofitted.** If contracts are first discharged by a trusted SMT pipeline, every later feature is built on a path that must eventually be ripped out (R15). Building the kernel first means every feature is sound the day it ships.
-2. **It matches the core ambition**: writing theorems and proofs in TypeScript. A working "Lean in TypeScript syntax" is the most distinctive and most demonstrable milestone.
-3. **Contracts are just theorems.** `requires`/`ensures`, loop invariants and refinement types all elaborate into kernel propositions. With the kernel in place they are a front-end feature, not a second verifier.
+Because ProofScript is plain TypeScript (D5), there is no parser, loader or editor-syntax work to do before the kernel. Projects can adopt the types package on day one, and `tsc`, Node and every other tool already work.
 
-The syntactic strip pass still comes first (phase 0), because it is cheap and is what makes `.pts` files usable everywhere from day one (R1, R3).
+## Phase 0 — Scaffolding
 
-## Phase 0 — Foundations and spike
+- Monorepo: `packages/proofscript` (the types + inert runtime package users import), `packages/kernel`, `packages/checker` (front end + CLI); test runner; CI.
+- `proofscript check` CLI skeleton on the TypeScript 6 compiler API: load a `tsconfig.json` project, find declarations that use ProofScript symbols (resolved by symbol, not name), report positions.
+- **Superset conformance suite:** `proofscript check` on ordinary TS projects (and TypeScript's own test corpus) must report nothing and change nothing (R1, R10).
 
-- Repository scaffolding: TypeScript monorepo, test runner, CI.
-- **`strip`**: whitespace-preserving eraser for the §7 grammar, built on a fork of the TypeScript 6 scanner/parser.
-- **Superset conformance suite (R1, R2)**: run `strip` over TypeScript's own test corpus and real-world projects; it must be the identity on every valid `.ts` file. This suite is permanent CI.
-- `node --import proofscript/register` loader; esbuild/Vite plugin.
-- **Spike to confirm TypeScript 7.1 content mappers** work for `.pts` (generated TS, mappings, extra diagnostics in `tsc` output), with Volar on TS 6 as the fallback. The research claims rest on the 7.1 beta and on source reading, so they need confirming.
-- TextMate grammar for syntax highlighting.
-
-**Exit:** `.pts` files with ProofScript syntax type-check with `tsc`, run under Node and bundle with Vite. Nothing is verified yet.
+**Exit:** `proofscript check` runs on real projects; the prototype in `docs/design/typescript-only/` is its first test fixture.
 
 ## Phase 1 — Kernel and theorem proving ("Lean in TypeScript")
 
-- **Kernel**: LeanTT in TypeScript: expressions with de Bruijn indices, universe levels, inductive families with recursors, definitional unfolding, proof irrelevance, eta, quotients. Kept small and separately reviewable.
-- **Lean export/import**: emit Lean 4 kernel export format; CI re-checks all proofs with Lean's kernel. Also import small Lean developments, to cross-test our kernel against Lean's.
-- **Elaborator for the ghost layer**: `theorem`, `inductive`, `ghost function`, `Prop`, `Nat`/`Int`, `eq`, `forall`/`exists`, `==>`; implicit arguments via unification; term proofs with `switch`-as-pattern-matching; structural recursion checking.
-- **Core tactics**: `intro`, `exact`, `apply`, `rfl`, `cases`, `induction`, `rw`, `simp` (basic), `omega` (Presburger arithmetic producing kernel terms), `decide`, `calc`.
-- `admit`, `axiom`, and **trust footprints / `proofscript audit`** from day one.
-- A prelude: `Nat`, `Int`, `Bool`, `List`, equality and arithmetic lemmas.
+- **Kernel**: Lean 4's type theory in TypeScript: expressions with de Bruijn indices, universe levels, inductive families with recursors, definitional unfolding, proof irrelevance, eta, quotients. Small and separately reviewable.
+- **Lean interop**: export to Lean 4's kernel export format, with CI re-checking every proof in Lean; import small Lean developments to cross-test our kernel against Lean's.
+- **Elaborator, theorem side**: theorem functions (`prove(…)` statements and Curry–Howard return types), `Prop`, inductive propositions (`interface` + `declare namespace`), discriminated unions as inductive types, `nat`/`Nat`/`Int`, `eq`, `forall`/`exists`/`implies`, implicit value parameters, term proofs (recursion, `switch`/`?:` as pattern matching), structural recursion checking.
+- **Core tactics**: `intro`, `exact`, `apply`, `rfl`, `cases`, `induction`, `rw`, `simp`, `omega` (producing kernel terms), `decide`, `calc`, `have`.
+- `sorry`, axioms, and **trust footprints / `proofscript audit`** from day one.
+- **Prelude**: `Nat`, `Int`, `Bool`, lists, and their basic lemmas.
 
-**Exit:** a library of nontrivial theorems (list lemmas, arithmetic, a sortedness proof of insertion sort written as a ghost function) checked by our kernel *and* re-checked by Lean.
+**Exit:** a library of nontrivial theorems (list lemmas, arithmetic, insertion sort's correctness) written in TypeScript, checked by our kernel *and* re-checked by Lean.
 
-## Phase 2 — Reflecting pure TypeScript
+## Phase 2 — Reflecting pure TypeScript and refinements
 
-- Interpretation of TS types (§4.1): discriminated unions → inductives, readonly records/tuples/arrays, literal types.
-- Kernel models: `Float64` (IEEE-754 binary64 with ES operations), `int`/`nat` refinements and the prelude theorem that safe-integer arithmetic is exact, `JSString`, `bigint` → `Int`.
-- **Reflection** (§6.2) of pure, total TS functions, including local `let` mutation and loops via state-passing.
-- Contracts on pure functions: `requires`, `ensures`, `decreases`; refinement types `(x: T) where P`; value-indexed types `<n: nat>`.
-- Declaration view + TS integration (content mapper / Volar), `.d.pts` generation, cross-module specs.
-- **Editor**: LSP side-channel with goal panel; diagnostics positioned in `.pts` source.
+- Interpretation of TS types: discriminated unions, readonly records, tuples, arrays and literal types.
+- Kernel models: IEEE-754 `Float64` with ECMAScript's operations; `int`/`nat` and the theorem that safe-integer arithmetic is exact; UTF-16 strings; `bigint`.
+- **Reflection** of pure, total TS functions (including local `let` mutation and loops), and of built-ins such as `Array.prototype.every`.
+- Refinements `T & R`, `Is<typeof pred, Args>`, preconditions and postconditions, value indices (`n extends nat`, `typeof x`), `satisfies` assertions.
+- **Editor**: language-server goal panel and diagnostics (as a TS server plugin plus a ProofScript language server).
 
-**Exit:** the `List` / `binarySearch`-over-immutable-data examples from the design verify end to end inside VS Code, and `tsc` reports proof failures.
+**Exit:** the `List`, `Vec` and `binarySearch` examples verify end to end in VS Code, and the two bad calls in the prototype's `main.ts` are rejected.
 
 ## Phase 3 — Imperative code and automation
 
-- WP-based VC generation for local-imperative code (loops, early return, exceptions); invariant inference for simple loops.
-- SMT oracle (Z3/cvc5 in wasm) with proof reconstruction for linear arithmetic and uninterpreted functions; uncertified results tracked as `smt`.
-- Heap model and dynamic frames (`reads`, `modifies`, `old`), mutable arrays, `Map`/`Set`.
-- Validators: generation from types, verified copy-in.
-- **Deep-embedded semantics of the verifiable JS subset S**, an extracted interpreter differentially tested against test262 and V8/SpiderMonkey/JSC; adequacy theorem for reflection, which moves reflection out of the TCB.
-- Assurance levels 0–4 enforced from `tsconfig`.
+- Weakest-precondition verification for local-imperative code: loops with `satisfies` invariants, early return, exceptions; invariant inference for simple loops.
+- SMT oracle (Z3/cvc5 in wasm) with proof reconstruction; uncertified results tracked as `smt` ([D3](06-decision-log.md#d3-trust-of-automation-smt-decision-procedures--default)).
+- Heap model and frames (`Reads`, `Modifies`, `Old`); mutable arrays, `Map`, `Set`.
+- Validators for data from unverified code.
+- **Deep-embedded semantics of the verifiable JavaScript subset**, an interpreter tested against test262 and the major engines, and the adequacy theorem that takes reflection out of the trusted base.
+- Assurance levels 0–4 enforced from `tsconfig.json`.
 
-**Exit:** a real npm library (e.g. `base64-js`, which is also the original target from the March prototype) verified at level 3, published with `.d.pts` specs, and consumed unchanged by plain TS projects.
+**Exit:** a real npm library (e.g. `base64-js`, the March prototype's target) verified at level 3 and published with its specs, consumed unchanged by plain TS projects.
 
 ## Phase 4 — Ecosystem
 
-- `async`/`await` and callbacks; classes and prototypes in S.
-- Tactic metaprogramming in ProofScript itself.
-- Lean library import (core, and potentially Mathlib).
-- Community `.d.pts` repository for popular packages (the DefinitelyTyped analogue), clearly marked as assumptions.
-- Performance: incremental checking, caching of kernel results, optional Rust/wasm kernel if profiling demands.
-- Long term: verify the ProofScript kernel and strip pass in ProofScript.
+- `async`/`await`, callbacks, classes.
+- Tactics written in ProofScript.
+- Lean library import (core, potentially Mathlib).
+- Community specs for popular packages, clearly marked as assumptions.
+- Performance: incremental checking, caching, an optional Rust/wasm kernel.
+- Optional: the dedicated-syntax sugar of [02 §7](02-language-design.md#7-concrete-syntax), if real use shows it is needed.
+- Long term: verify the ProofScript kernel in ProofScript.
 
 ## Immediate next steps
 
-1. Decide the open questions in [design §12](02-language-design.md#12-open-design-questions) that block phase 0–1 (kernel strategy, file extension).
-2. Write the formal grammar addendum (the precise §7 productions and their disambiguation rules) and the kernel specification (term language, typing rules, inductive declarations), both as design notes.
-3. Begin phase 0.
+1. Jordan reviews the [decision log](06-decision-log.md) at leisure. Defaults stand until changed.
+2. Write the kernel specification (term language, typing rules, inductive declarations, reduction) as a design note.
+3. Begin phase 0 and the kernel.

@@ -3,9 +3,9 @@
 // ProofScript is written entirely in TypeScript. Every type below has a simple
 // meaning to `tsc` (usually `number` or `unknown`) and a precise meaning to the
 // ProofScript checker, which recognizes these declarations by symbol, not name.
-// Implementation modules import only types from here (`import type`), so they
-// have no runtime dependency on ProofScript. Proof modules (`*.proof.ts`) also
-// use the inert runtime functions at the bottom.
+// Modules without theorems import only types from here (`import type`). Modules
+// with theorems also use the inert runtime functions at the bottom, which never
+// execute because theorems are never called.
 
 // ---- Numbers -----------------------------------------------------------------
 
@@ -57,14 +57,20 @@ export interface Prop {
 export interface Proof {
   readonly __proofscript_proof: never;
 }
+/** Attribute markers, intersected into a theorem's return type: `Proof & Simp`
+ * is Lean's `@[simp] theorem`. To TS, `unknown`. */
+export type Simp = unknown;
+
 /** A tactic. Opaque to TS. */
 export interface Tactic {
   readonly __proofscript_tactic: never;
 }
 
-// ---- Runtime surface for proof modules only ----------------------------------------
-// ProofScript reads the *source* of these calls; at runtime they are inert, except
-// that `prove` checks its statement, so a theorem run as TS is a property test.
+// ---- Runtime surface for theorems ---------------------------------------------------
+// Theorems may live in any module. ProofScript reads the *source* of these calls;
+// at runtime they are inert and never even reached, because nothing calls a theorem
+// (except a test, where `prove` checks its statement on the given inputs). The real
+// package is side-effect free, so bundlers drop it along with unreferenced theorems.
 
 const inert = Object.freeze({}) as never;
 
@@ -85,6 +91,8 @@ export function forall<A extends unknown[]>(_body: (...xs: A) => boolean): boole
 
 // Tactics: Lean's names, so Lean users (and models trained on Lean) transfer directly.
 export const omega: Tactic = inert;
+/** Lean's `sorry`: an unproved hole. Allowed, and always reported by `proofscript audit`. */
+export const sorry: Tactic & Proof = inert;
 export const rfl: Tactic & Proof = inert;
 /** One callback per constructor; callback parameters name fields and induction
  * hypotheses, so every hypothesis is an ordinary TS binding. */

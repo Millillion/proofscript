@@ -1,4 +1,4 @@
-import type { Is, nat } from "./proofscript/index.ts";
+import { by, induction, prove, simp, type Is, type nat, type Proof, type Simp } from "./proofscript/index.ts";
 
 export type List<T> =
   | { readonly tag: "nil" }
@@ -19,4 +19,13 @@ export function fromArray<T>(a: readonly T[]): List<T> {
   let r: List<T> = { tag: "nil" };
   for (let i = a.length - 1; i >= 0; i--) r = { tag: "cons", head: a[i], tail: r };
   return r;
+}
+
+// Theorems can sit right next to the code they are about, as in Lean.
+// `Proof & Simp` is Lean's `@[simp] theorem`.
+export function length_append<T>(xs: List<T>, ys: List<T>): Proof & Simp {
+  return prove(
+    length(append(xs, ys)) === length(xs) + length(ys),
+    by(induction(xs), simp(length, append)),
+  );
 }

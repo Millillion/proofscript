@@ -1,16 +1,16 @@
-import { by, congrArg, induction, prove, rfl, simp, type nat, type Proof } from "./proofscript/index.ts";
-import { append, length, type List } from "./list.ts";
+import { congrArg, omega, prove, rfl, simp, by, type nat, type Proof } from "./proofscript/index.ts";
+import { append, length, length_append, type List } from "./list.ts";
 
-// A theorem is a function: its parameters are universally quantified, and
-// `prove` states the claim as an ordinary boolean expression.
-export function length_append<T>(xs: List<T>, ys: List<T>): Proof {
+// Theorems can also live in their own module. This one uses `length_append`
+// from list.ts as a simp lemma.
+export function length_append_comm<T>(xs: List<T>, ys: List<T>): Proof {
   return prove(
-    length(append(xs, ys)) === length(xs) + length(ys),
-    by(induction(xs), simp(length, append)),
+    length(append(xs, ys)) === length(append(ys, xs)),
+    by(simp(length_append), omega),
   );
 }
 
-// The same theorem as a term proof: induction is recursion.
+// A term proof of the same fact as list.ts's `length_append`: induction is recursion.
 export function length_append_term<T>(xs: List<T>, ys: List<T>): Proof {
   return prove(length(append(xs, ys)) === length(xs) + length(ys), () =>
     xs.tag === "nil"
