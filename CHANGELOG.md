@@ -2,6 +2,13 @@
 
 ProofScript ships patch releases (0.0.x) until the 0.1.0 MVP. See [docs/v0.1.md](docs/v0.1.md).
 
+## 0.0.2 (2026-11-04)
+
+- **Structures:** plain object types (`type Point = { readonly x: nat; readonly y: nat }`) and interfaces are data types in the logic: field access, object literals (including shorthand properties), structural equality with `eq`.
+- **Strings with JavaScript's semantics:** a string is its sequence of UTF-16 code units, so `"😀".length === 2` is a theorem and lone surrogates are representable. Supported: literals, `===`, `+` (concatenation of two strings), `.length`, `startsWith`, `endsWith`, `charCodeAt` (index proved in bounds). Mixing strings with other values in `+` is rejected (JavaScript would coerce).
+- **Partial failures:** a failing declaration no longer blocks the rest. ProofScript removes it and everything depending on it, rebuilds, and verifies the remainder.
+- Fixtures: `good-struct`, `good-string`, `bad-string`, `bad-struct`, `mixed`. 29/29 tests pass.
+
 ## 0.0.1 (2026-11-04)
 
 First tagged patch release.

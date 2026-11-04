@@ -111,6 +111,8 @@ interface InductiveShape {
   readonly leanName: string;
   readonly params: string[];
   readonly ctors: { tag: string; fields: { name: string; type: ts.TypeNode }[] }[];
+  /** A structure: one constructor (`mk`) and no `tag` field. */
+  readonly tagless: boolean;
 }
 
 const RESERVED = new Set([
@@ -309,7 +311,7 @@ export class Translator {
     const existing = this.decls.get(decl);
     if (existing !== undefined) return existing.leanName;
     if (ts.isTypeAliasDeclaration(decl)) return this.requireInductive(decl).leanName;
-    if (ts.isInterfaceDeclaration(decl)) return this.translatePropInductive(decl);
+    if (ts.isInterfaceDeclaration(decl)) return this.extendsProp(decl) ? this.translatePropInductive(decl) : this.requireInductive(decl).leanName;
     if (ts.isFunctionDeclaration(decl)) {
       const name = this.leanNameOf(decl);
       if (this.#inProgress.has(decl)) return name; // recursion
@@ -346,7 +348,8 @@ export class Translator {
       case ts.SyntaxKind.BooleanKeyword:
         return "Bool";
       case ts.SyntaxKind.StringKeyword:
-        return "String";
+        // JavaScript strings are sequences of UTF-16 code units (lone surrogates included).
+        return "(List UInt16)";
       case ts.SyntaxKind.BigIntKeyword:
         return "Int";
       case ts.SyntaxKind.NumberKeyword:
@@ -434,20 +437,27 @@ export class Translator {
 
   // ---- Inductive types: discriminated unions ------------------------------------------------
 
-  requireInductive(decl: ts.TypeAliasDeclaration): InductiveShape {
+  requireInductive(decl: ts.TypeAliasDeclaration | ts.InterfaceDeclaration): InductiveShape {
     const cached = this.#inductives.get(decl);
     if (cached !== undefined) return cached;
     const leanName = this.leanNameOf(decl);
-    if (ts.isIntersectionTypeNode(decl.type) || ts.isArrayTypeNode(decl.type) || ts.isTypeOperatorNode(decl.type)) {
-      return this.fail(decl, "refinement type aliases and arrays are not supported in the logic yet (milestone M5)");
+    if (ts.isInterfaceDeclaration(decl) && (decl.heritageClauses?.length ?? 0) > 0) {
+      return this.fail(decl, "interfaces that extend other types are not supported in the logic yet");
     }
-    const members = ts.isUnionTypeNode(decl.type) ? decl.type.types : [decl.type];
+    if (ts.isTypeAliasDeclaration(decl) && (ts.isIntersectionTypeNode(decl.type) || ts.isArrayTypeNode(decl.type) || ts.isTypeOperatorNode(decl.type))) {
+      return this.fail(decl, "refinement type aliases are not supported in the logic yet");
+    }
+    const members: readonly { members: ts.NodeArray<ts.TypeElement>; node: ts.Node }[] = ts.isInterfaceDeclaration(decl)
+      ? [{ members: decl.members, node: decl }]
+      : (ts.isUnionTypeNode(decl.type) ? decl.type.types : [decl.type]).map((m) =>
+          ts.isTypeLiteralNode(m) ? { members: m.members, node: m } : this.fail(m, "only object types and discriminated unions of object types (with a `tag` field) can be data types in the logic"),
+        );
     const ctors: InductiveShape["ctors"] = [];
-    for (const m of members) {
-      if (!ts.isTypeLiteralNode(m)) return this.fail(m, "only discriminated unions of object types (with a `tag` field) can be inductive types");
+    let tagless = false;
+    for (const { members: ms, node: m } of members) {
       let tag: string | undefined;
       const fields: { name: string; type: ts.TypeNode }[] = [];
-      for (const p of m.members) {
+      for (const p of ms) {
         if (!ts.isPropertySignature(p) || p.type === undefined || !ts.isIdentifier(p.name)) return this.fail(p, "unsupported member");
         if (p.questionToken !== undefined) return this.fail(p, "optional fields are not supported in inductive types");
         if (!p.modifiers?.some((mod) => mod.kind === ts.SyntaxKind.ReadonlyKeyword)) {
@@ -460,12 +470,17 @@ export class Translator {
           fields.push({ name: p.name.text, type: p.type });
         }
       }
-      if (tag === undefined) return this.fail(m, "each member of an inductive type needs a `readonly tag` string literal");
+      if (tag === undefined) {
+        // A single object type without `tag` is a structure (one constructor, `mk`).
+        if (members.length !== 1) return this.fail(m, "each member of a union needs a `readonly tag` string literal");
+        tag = "mk";
+        tagless = true;
+      }
       if (ctors.some((c) => c.tag === tag)) return this.fail(m, `duplicate tag "${tag}"`);
       ctors.push({ tag, fields });
     }
     const params = (decl.typeParameters ?? []).map((tp) => this.ident(tp.name.text));
-    const shape: InductiveShape = { leanName, params, ctors };
+    const shape: InductiveShape = { leanName, params, ctors, tagless };
     this.#inductives.set(decl, shape);
     try {
       this.#emitInductive(decl, shape);
@@ -477,7 +492,7 @@ export class Translator {
     return shape;
   }
 
-  #emitInductive(decl: ts.TypeAliasDeclaration, shape: InductiveShape): void {
+  #emitInductive(decl: ts.TypeAliasDeclaration | ts.InterfaceDeclaration, shape: InductiveShape): void {
     const { leanName, params, ctors } = shape;
     // Register before translating field types (they may refer to the type itself).
     const placeholder: GeneratedDecl = { kind: "inductive", tsName: decl.name.text, leanName, node: decl, source: "", deps: new Set() };
@@ -501,6 +516,10 @@ export class Translator {
   shapeOfType(t: ts.Type): InductiveShape | undefined {
     const decl = t.aliasSymbol?.declarations?.[0];
     if (decl !== undefined && ts.isTypeAliasDeclaration(decl)) return this.#inductives.get(decl) ?? this.requireInductive(decl);
+    const idecl = t.symbol?.declarations?.find((d): d is ts.InterfaceDeclaration => ts.isInterfaceDeclaration(d));
+    if (idecl !== undefined && !this.extendsProp(idecl) && !idecl.getSourceFile().isDeclarationFile) {
+      return this.#inductives.get(idecl) ?? this.requireInductive(idecl);
+    }
     return undefined;
   }
 
@@ -968,7 +987,7 @@ export class Translator {
       case "boolean":
         return "Bool";
       case "string":
-        return "String";
+        return "(List UInt16)";
       default:
         return this.fail(node, "annotate this variable's type (`nat`, `int`, …) so its meaning in the logic is clear");
     }
@@ -1188,6 +1207,10 @@ export class Translator {
 
   // ---- Expressions ---------------------------------------------------------------------------
 
+  isStringExpr(e: ts.Expression): boolean {
+    return (this.checker.getTypeAtLocation(e).flags & ts.TypeFlags.StringLike) !== 0;
+  }
+
   isArrayExpr(e: ts.Expression): boolean {
     const t = this.checker.getTypeAtLocation(e);
     return this.checker.isArrayType(t) || this.checker.isArrayType(this.checker.getApparentType(t));
@@ -1209,7 +1232,7 @@ export class Translator {
     }
     if (e.kind === ts.SyntaxKind.TrueKeyword) return mode === "prop" ? "True" : "true";
     if (e.kind === ts.SyntaxKind.FalseKeyword) return mode === "prop" ? "False" : "false";
-    if (ts.isStringLiteral(e)) return JSON.stringify(e.text);
+    if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) return codeUnits(e.text);
     if (ts.isIdentifier(e)) {
       const sym = this.checker.getSymbolAtLocation(e);
       const l = sym === undefined ? undefined : scope.locals.get(sym);
@@ -1226,6 +1249,9 @@ export class Translator {
     }
     if (ts.isPropertyAccessExpression(e) && e.name.text === "length" && this.isArrayExpr(e.expression)) {
       return `(${this.expr(e.expression, "value", scope, deps)}).size`;
+    }
+    if (ts.isPropertyAccessExpression(e) && e.name.text === "length" && this.isStringExpr(e.expression)) {
+      return `(${this.expr(e.expression, "value", scope, deps)}).length`;
     }
     if (ts.isElementAccessExpression(e)) {
       if (!this.isArrayExpr(e.expression)) return this.fail(e, "indexing is only supported on arrays in the logic yet");
@@ -1313,6 +1339,12 @@ export class Translator {
       case ts.SyntaxKind.PlusToken:
       case ts.SyntaxKind.AsteriskToken:
       case ts.SyntaxKind.MinusToken:
+        if (k === ts.SyntaxKind.PlusToken && (this.isStringExpr(e.left) || this.isStringExpr(e.right))) {
+          if (!this.isStringExpr(e.left) || !this.isStringExpr(e.right)) {
+            return this.fail(e, "`+` mixing a string with a non-string converts the other value to a string in JavaScript; this is not supported in the logic yet");
+          }
+          return `(${sub(e.left, "value")} ++ ${sub(e.right, "value")})`;
+        }
         return this.arith(k, e.left, e.right, e, scope, deps);
       default:
         return this.fail(e.operatorToken, `operator ${e.operatorToken.getText()} is not supported in the logic yet`);
@@ -1390,6 +1422,7 @@ export class Translator {
     if (ts.isParenthesizedExpression(e)) return this.kindOf(e.expression, scope);
     if (ts.isNumericLiteral(e)) return "literal";
     if (ts.isBigIntLiteral(e)) return "bigint";
+    if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) return "string";
     const fromTypeNode = (t: ts.TypeNode | undefined): ReturnType<Translator["kindOf"]> => {
       if (t === undefined) return "other";
       if (ts.isIntersectionTypeNode(t)) {
@@ -1435,12 +1468,18 @@ export class Translator {
         return inner !== undefined && ts.isBinaryExpression(inner) ? this.kindOf(inner.left, scope) : "other";
       }
       if (this.isArrayExpr(recv)) return "boolean";
+      if (this.isStringExpr(recv)) return e.expression.name.text === "charCodeAt" ? "nat" : "boolean";
     }
     if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.MinusToken && ts.isNumericLiteral(e.operand)) return "int";
     if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.expression)) {
       const sym = this.checker.getSymbolAtLocation(e.expression);
       const f = sym === undefined ? undefined : scope.narrowed.get(sym)?.get(e.name.text);
-      return f === undefined ? "other" : fromTypeNode(f.type);
+      if (f !== undefined) return fromTypeNode(f.type);
+      const shape = this.shapeOfType(this.checker.getTypeAtLocation(e.expression));
+      const field = shape !== undefined && shape.ctors.length === 1 ? shape.ctors[0]!.fields.find((x) => x.name === e.name.text) : undefined;
+      if (field !== undefined) return fromTypeNode(field.type);
+      if (e.name.text === "length" && (this.checker.getTypeAtLocation(e.expression).flags & ts.TypeFlags.StringLike) !== 0) return "nat";
+      return "other";
     }
     if (ts.isCallExpression(e) && ts.isIdentifier(e.expression)) {
       const fl = fnLike(this.declOf(e.expression));
@@ -1448,6 +1487,7 @@ export class Translator {
     }
     if (ts.isBinaryExpression(e)) {
       const k = e.operatorToken.kind;
+      if (k === ts.SyntaxKind.PlusToken && this.isStringExpr(e)) return "string";
       if (k === ts.SyntaxKind.PlusToken || k === ts.SyntaxKind.AsteriskToken || k === ts.SyntaxKind.MinusToken) {
         const a = this.kindOf(e.left, scope);
         const b = this.kindOf(e.right, scope);
@@ -1461,6 +1501,7 @@ export class Translator {
       return "boolean";
     }
     if (this.isBooleanType(e)) return "boolean";
+    if (this.isStringExpr(e)) return "string";
     return "other";
   }
 
@@ -1489,19 +1530,26 @@ export class Translator {
     deps.add(shape.leanName);
     const props = new Map<string, ts.Expression>();
     for (const p of e.properties) {
-      if (!ts.isPropertyAssignment(p) || !ts.isIdentifier(p.name)) return this.fail(p, "unsupported property");
-      props.set(p.name.text, p.initializer);
+      if (ts.isPropertyAssignment(p) && ts.isIdentifier(p.name)) props.set(p.name.text, p.initializer);
+      else if (ts.isShorthandPropertyAssignment(p)) props.set(p.name.text, p.name);
+      else return this.fail(p, "unsupported property (spreads and computed names are not supported in the logic yet)");
     }
-    const tagExpr = props.get("tag");
-    if (tagExpr === undefined || !ts.isStringLiteral(tagExpr)) return this.fail(e, "constructor literal needs a `tag`");
-    const ctor = shape.ctors.find((c) => c.tag === tagExpr.text);
-    if (ctor === undefined) return this.fail(tagExpr, `unknown constructor "${tagExpr.text}"`);
-    const args = ctor.fields.map((f) => {
+    let ctor: InductiveShape["ctors"][number] | undefined;
+    if (shape.tagless) {
+      ctor = shape.ctors[0];
+    } else {
+      const tagExpr = props.get("tag");
+      if (tagExpr === undefined || !ts.isStringLiteral(tagExpr)) return this.fail(e, "constructor literal needs a `tag`");
+      ctor = shape.ctors.find((c) => c.tag === tagExpr.text);
+      if (ctor === undefined) return this.fail(tagExpr, `unknown constructor "${tagExpr.text}"`);
+    }
+    const c = ctor!;
+    const args = c.fields.map((f) => {
       const v = props.get(f.name);
       if (v === undefined) return this.fail(e, `missing field ${f.name}`);
       return this.expr(v, "value", scope, deps);
     });
-    return `(${shape.leanName}.${this.ident(ctor.tag)}${args.map((a) => ` ${a}`).join("")})`;
+    return `(${shape.leanName}.${this.ident(c.tag)}${args.map((a) => ` ${a}`).join("")})`;
   }
 
   call(e: ts.CallExpression, mode: Mode, scope: Scope, deps: Set<string>): string {
@@ -1554,6 +1602,32 @@ export class Translator {
           return `(have _ : ${b} > 0 := (by first | omega | (simp_all <;> omega) | grind | decide); ${this.expr(inner.left, "value", scope, deps)} / ${b})`;
         }
         return this.fail(e, "`Math.floor` is supported only as `Math.floor(a / b)` on `nat` values");
+      }
+      if (this.isStringExpr(recv)) {
+        const str = this.expr(recv, "value", scope, deps);
+        let r: string;
+        switch (m) {
+          case "startsWith":
+            if (args.length !== 1) return this.fail(e, "`startsWith` with a position is not supported in the logic yet");
+            r = `(List.isPrefixOf ${this.expr(args[0]!, "value", scope, deps)} ${str})`;
+            break;
+          case "endsWith":
+            if (args.length !== 1) return this.fail(e, "`endsWith` with a length is not supported in the logic yet");
+            r = `(List.isSuffixOf ${this.expr(args[0]!, "value", scope, deps)} ${str})`;
+            break;
+          case "charCodeAt": {
+            const i = args[0];
+            if (i === undefined) return this.fail(e, "`charCodeAt` needs an index");
+            const ik = this.kindOf(i, scope);
+            if (ik !== "nat" && ik !== "literal") return this.fail(i, "the index must be `nat`");
+            // In bounds (proved), JavaScript returns the UTF-16 code unit; out of bounds it returns NaN.
+            r = `(${str}[${this.expr(i, "value", scope, deps)}]).toNat`;
+            break;
+          }
+          default:
+            return this.fail(e, `string method \`${m}\` is not supported in the logic yet`);
+        }
+        return this.coerceProp(e, r, mode);
       }
       if (this.isArrayExpr(recv)) {
         const a = this.expr(recv, "value", scope, deps);
@@ -1800,6 +1874,13 @@ export class Translator {
 /** Whether a binder name belongs to an implicit `{T : Type}`/`{n : Nat}` binder (not passed explicitly). */
 function b0IsType(name: string, binders: readonly string[]): boolean {
   return binders.some((b) => b.startsWith(`{${name} :`));
+}
+
+/** A JavaScript string literal as its UTF-16 code units. */
+function codeUnits(text: string): string {
+  const units: number[] = [];
+  for (let i = 0; i < text.length; i++) units.push(text.charCodeAt(i));
+  return `([${units.join(", ")}] : List UInt16)`;
 }
 
 function countTerms(e: ts.Node): number {

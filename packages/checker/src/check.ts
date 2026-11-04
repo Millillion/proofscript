@@ -46,7 +46,7 @@ export function checkProject(project: Project, workDir: string): CheckResult {
   if (theorems.length === 0) return { diagnostics, unverified, theorems: [], declarationsChecked: 0 };
 
   // 1. Prove with Lean (untrusted).
-  const build = buildLean(workDir, decls);
+  let build = buildLean(workDir, decls);
   const failed = new Set<GeneratedDecl>();
   if (!build.ok) {
     const starts = [...build.lines.entries()].sort((a, b) => a[1] - b[1]);
@@ -59,16 +59,31 @@ export function checkProject(project: Project, workDir: string): CheckResult {
       const p = pos(owner);
       diagnostics.push({ ...p, message: explain(owner, m.text) });
     }
-    return {
-      diagnostics,
-      unverified,
-      theorems: theorems.map((t) => ({ ...base(t, pos), status: "failed" as const, axioms: [], reflected: [], assumptions: [] })),
-      declarationsChecked: 0,
-    };
+    // Drop what failed (and everything depending on it), and check the rest.
+    const byName = new Map(decls.map((d) => [d.leanName, d]));
+    const dead = new Set<GeneratedDecl>(failed);
+    for (let changed = true; changed; ) {
+      changed = false;
+      for (const d of decls) {
+        if (!dead.has(d) && [...d.deps].some((n) => byName.has(n) && dead.has(byName.get(n)!))) {
+          dead.add(d);
+          changed = true;
+        }
+      }
+    }
+    for (const d of dead) failed.add(d);
+    const alive = decls.filter((d) => !dead.has(d));
+    const failedResults = theorems.filter((t) => dead.has(t)).map((t) => ({ ...base(t, pos), status: "failed" as const, axioms: [], reflected: [], assumptions: [] }));
+    if (!alive.some((d) => d.kind === "theorem")) return { diagnostics, unverified, theorems: failedResults, declarationsChecked: 0 };
+    build = buildLean(workDir, alive);
+    if (!build.ok) {
+      diagnostics.push({ file: "", line: 0, column: 0, message: "Lean failed on declarations that did not fail on their own; nothing could be checked" });
+      return { diagnostics, unverified, theorems: theorems.map((t) => ({ ...base(t, pos), status: "failed" as const, axioms: [], reflected: [], assumptions: [] })), declarationsChecked: 0 };
+    }
   }
 
   // 2. Export the proofs and check them with ProofScript's kernel (trusted).
-  const text = exportDecls(workDir, theorems.map((t) => t.leanName));
+  const text = exportDecls(workDir, theorems.filter((t) => !failed.has(t)).map((t) => t.leanName));
   const kernel = new Kernel();
   let count = 0;
   try {
@@ -86,6 +101,7 @@ export function checkProject(project: Project, workDir: string): CheckResult {
   const defNames = new Map(decls.filter((d) => d.kind === "def").map((d) => [d.leanName, d.tsName]));
   const defAssumptions = new Map(decls.filter((d) => d.kind === "def").map((d) => [d.leanName, d.assumptions ?? []]));
   const results = theorems.map((t) => {
+    if (failed.has(t)) return { ...base(t, pos), status: "failed" as const, axioms: [], reflected: [], assumptions: [] };
     const c = kernel.env.get(kname(t.leanName));
     if (c === undefined || c.kind !== "theorem") {
       diagnostics.push({ ...pos(t), message: `internal error: ${t.leanName} missing from the export` });

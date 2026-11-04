@@ -93,3 +93,30 @@ test("bad-overflow: unbounded multiplication is rejected", { skip: !hasLean }, (
   assert.ok(r.diagnostics.length > 0);
   assert.ok(r.theorems.every((t) => t.status !== "verified"));
 });
+
+test("good-struct: plain object types and interfaces are structures", { skip: !hasLean }, () => {
+  const r = run("good-struct");
+  assert.deepEqual(r.diagnostics, []);
+  assert.deepEqual(r.theorems.map((t) => t.status), ["verified", "verified"]);
+});
+
+test("good-string: strings are UTF-16 code units, as in JavaScript", { skip: !hasLean }, () => {
+  const r = run("good-string");
+  assert.deepEqual(r.diagnostics, []);
+  assert.ok(r.theorems.length === 3 && r.theorems.every((t) => t.status === "verified"));
+});
+
+for (const name of ["bad-string", "bad-struct"]) {
+  test(`${name}: rejected`, { skip: !hasLean }, () => {
+    const r = run(name);
+    assert.ok(r.diagnostics.length > 0);
+    assert.ok(r.theorems.every((t) => t.status !== "verified"));
+  });
+}
+
+test("mixed: a failing theorem does not prevent checking the others", { skip: !hasLean }, () => {
+  const r = run("mixed");
+  const by = new Map(r.theorems.map((t) => [t.tsName, t.status]));
+  assert.equal(by.get("good"), "verified");
+  assert.equal(by.get("bad"), "failed");
+});
