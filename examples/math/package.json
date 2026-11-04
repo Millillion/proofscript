@@ -1,0 +1,7 @@
+{
+  "name": "@proofscript/example-math",
+  "version": "0.0.5",
+  "private": true,
+  "type": "module",
+  "description": "A small mathematics library written and proved in ProofScript"
+}

@@ -130,7 +130,10 @@ export const rfl: Tactic & Proof = inert;
 export const decide: Tactic = inert;
 export const trivial: Tactic = inert;
 export const constructor: Tactic = inert;
-export const grind: Tactic = inert;
+/** Lean's `grind` (also `grind(lemma, …)`): congruence closure, arithmetic and case splits. */
+export const grind: Tactic & ((...lemmas: unknown[]) => Tactic) = Object.assign(() => inert, inert);
+/** Lean's `split`: case-splits an `if`/`match` in the goal. */
+export const split: Tactic = inert;
 /** An unproved hole. Allowed, and always reported (the theorem is "admitted", not "verified"). */
 export const sorry: Tactic & Proof = inert;
 
@@ -162,6 +165,22 @@ export function apply(_proof: unknown): Tactic {
   return inert;
 }
 export function intro(..._names: string[]): Tactic {
+  return inert;
+}
+/** Lean's `simp only [lemmas]`. */
+export function simp_only(..._lemmas: unknown[]): Tactic {
+  return inert;
+}
+/** Lean's `t₁ <;> t₂ <;> …`: each tactic runs on every goal the previous one produced. */
+export function andThen(..._tactics: Tactic[]): Tactic {
+  return inert;
+}
+/** Lean's `try t` (`try` is a reserved word in JavaScript). */
+export function attempt(_t: Tactic): Tactic {
+  return inert;
+}
+/** Lean's `first | t₁ | t₂ | …`. */
+export function first(..._tactics: Tactic[]): Tactic {
   return inert;
 }
 /** Lean's `all_goals`. */

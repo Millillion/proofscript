@@ -1943,6 +1943,15 @@ export class Translator {
       if (this.isStringExpr(recv)) return e.expression.name.text === "charCodeAt" ? "nat" : "boolean";
     }
     if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.MinusToken && ts.isNumericLiteral(e.operand)) return "int";
+    if (ts.isConditionalExpression(e)) {
+      const a = this.kindOf(e.whenTrue, scope);
+      const b = this.kindOf(e.whenFalse, scope);
+      if (a === b) return a;
+      const ks = [a, b];
+      if (ks.every((k) => k === "nat" || k === "literal")) return "nat";
+      if (ks.every((k) => k === "int" || k === "nat" || k === "literal")) return "int";
+      return "other";
+    }
     if (ts.isPropertyAccessExpression(e) && ts.isIdentifier(e.expression)) {
       const sym = this.checker.getSymbolAtLocation(e.expression);
       const f = sym === undefined ? undefined : scope.narrowed.get(sym)?.get(e.name.text);
@@ -2227,7 +2236,7 @@ export class Translator {
   tactic(e: ts.Expression, scope: Scope, deps: Set<string>): string {
     if (ts.isIdentifier(e)) {
       const ps = this.ps(e);
-      if (ps === "omega" || ps === "rfl" || ps === "decide" || ps === "trivial" || ps === "simp_all" || ps === "sorry" || ps === "grind" || ps === "constructor") return ps;
+      if (ps === "omega" || ps === "rfl" || ps === "decide" || ps === "trivial" || ps === "simp_all" || ps === "sorry" || ps === "grind" || ps === "constructor" || ps === "split") return ps;
       return this.fail(e, `\`${e.text}\` is not a tactic`);
     }
     if (!ts.isCallExpression(e)) return this.fail(e, "expected a tactic");
@@ -2236,6 +2245,18 @@ export class Translator {
     switch (ps) {
       case "by":
         return args.map((a) => this.tactic(a, scope, deps)).join("\n");
+      case "grind": {
+        const lemmas = args.map((a) => this.lemmaRef(a, scope, deps));
+        return lemmas.length === 0 ? "grind" : `grind [${lemmas.join(", ")}]`;
+      }
+      case "simp_only":
+        return `simp only [${args.map((a) => this.lemmaRef(a, scope, deps)).join(", ")}]`;
+      case "andThen":
+        return args.map((a) => `(${this.tactic(a, scope, deps).replace(/\n/g, "; ")})`).join(" <;> ");
+      case "attempt":
+        return `try (${this.tactic(args[0]!, scope, deps).replace(/\n/g, "; ")})`;
+      case "first":
+        return `first ${args.map((a) => `| (${this.tactic(a, scope, deps).replace(/\n/g, "; ")})`).join(" ")}`;
       case "simp":
       case "simp_all": {
         const lemmas = args.map((a) => this.lemmaRef(a, scope, deps));

@@ -2,6 +2,18 @@
 
 ProofScript ships patch releases (0.0.x) until the 0.1.0 MVP. See [docs/v0.1.md](docs/v0.1.md).
 
+## 0.0.5 (2026-11-04)
+
+- **`examples/math`:** a mathematics library written in TypeScript, 28 theorems, all checked by the kernel:
+  - arithmetic (commutativity, associativity, distributivity, `(a + b)² = a² + 2ab + b²`);
+  - an inductive family of propositions (`Even<n>`) with proofs by induction;
+  - lists: `append` is associative, `reverse` is an involution and distributes over `append`, lengths add up;
+  - insertion sort: the result is sorted, contains the same elements with the same multiplicities, and has the same length;
+  - value-indexed vectors (`Vec`, `Fin`, `replicate`, `zip`, `get`).
+- **Tactics:** `split`, `simp_only(…)`, `andThen(t₁, t₂, …)` (Lean's `<;>`), `attempt(t)` (Lean's `try`, a reserved word in JavaScript), `first(…)`, `grind(lemmas…)`.
+- Arithmetic on conditional expressions (`(x === y ? 1 : 0) + n`).
+- 37/37 tests pass.
+
 ## 0.0.4 (2026-11-04)
 
 - **Value-indexed (dependent) types:** refinement aliases such as `type Vec<T, n extends nat> = readonly T[] & Length<n>` and `type Fin<n extends nat> = nat & Lt<n>` work as parameter types (preconditions), return types (postconditions), invariants and theorem hypotheses. New `Length<n>` refinement for arrays and strings.

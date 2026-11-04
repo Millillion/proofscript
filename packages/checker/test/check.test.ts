@@ -148,3 +148,10 @@ test("bad-indexed: an out-of-range Fin index is rejected", { skip: !hasLean }, (
   assert.ok(r.diagnostics.some((d) => /precondition/.test(d.message)));
   assert.ok(r.theorems.every((t) => t.status !== "verified"));
 });
+
+test("examples/math: the whole library verifies", { skip: !hasLean }, () => {
+  const r = check(new URL("../../../examples/math/tsconfig.json", import.meta.url).pathname);
+  assert.deepEqual(r.diagnostics, []);
+  assert.ok(r.theorems.length >= 28, `expected the library's theorems, got ${r.theorems.length}`);
+  assert.ok(r.theorems.every((t) => t.status === "verified"));
+});

@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "examples/*"
   ],
   "engines": {
     "node": ">=24"
@@ -18,5 +19,5 @@
     "@types/node": "^24.5.2",
     "typescript": "^7.0.2"
   },
-  "version": "0.0.4"
+  "version": "0.0.5"
 }
