@@ -33,6 +33,8 @@ export interface GeneratedDecl {
   readonly kind: "inductive" | "def" | "theorem";
   /** For generated proof obligations (postconditions): what they establish. */
   readonly obligation?: string;
+  /** Environment assumptions the translation of this definition relies on (D32). */
+  readonly assumptions?: readonly string[];
   readonly tsName: string;
   readonly leanName: string;
   readonly node: ts.Node;
@@ -131,8 +133,22 @@ export class Translator {
   #currentTypeBinders: string[] = [];
   /** Loop helpers generated for each function (innermost first), for postcondition proofs. */
   readonly #loops = new Map<string, { name: string; args: string[]; binders: string[]; scope: Scope; node: ts.Node }[]>();
+  /**
+   * Side conditions (overflow, subtraction, division guards) collected while
+   * translating one statement; emitted as `have` lines before it, so values stay
+   * free of proofs. `undefined`: emit inline (inside lambdas).
+   */
+  #guards: string[] | undefined;
+  /** Inside a function body (running code): arithmetic must be proved not to overflow (D32). */
+  #runtime = false;
+  /** Environment assumptions used while translating the current function. */
+  #assumptions = new Set<string>();
+  /** Whether every arithmetic operation in the current function was counting (no guards). */
+  #onlyCounting = true;
+  /** Functions returning a count: every result is a sum of small constants and counts. */
+  readonly #countingFns = new Set<string>();
   /** The function being translated (loop helpers are named after it and share its return type). */
-  #currentFunction: { leanName: string; tsName: string; ret: string } | undefined;
+  #currentFunction: { leanName: string; tsName: string; ret: string; preconds: { sym: ts.Symbol; m: ts.TypeNode }[] } | undefined;
   #fresh = 0;
 
   constructor(project: Project) {
@@ -557,6 +573,8 @@ export class Translator {
     const typeParams = new Map<ts.Symbol, string>();
     const binders = this.typeParamBinders(fn.typeParameters, deps, typeParams);
     const typeBinders = [...binders];
+    const hypBinders: string[] = [];
+    const preconds: { sym: ts.Symbol; m: ts.TypeNode }[] = [];
     const types = new Map<ts.Symbol, string>();
     (scope as { types?: Map<ts.Symbol, string> }).types = types;
     fn.parameters.forEach((p, i) => {
@@ -571,24 +589,44 @@ export class Translator {
         types.set(sym, ty);
       }
       binders.push(`(${n} : ${ty})`);
-      binders.push(...this.preconditionBinders(p, n, i, scope, deps, typeParams));
+      hypBinders.push(...arraySizeBinder(n, ty));
+      hypBinders.push(...this.preconditionBinders(p, n, i, scope, deps, typeParams));
+      if (p.type !== undefined && ts.isIntersectionTypeNode(p.type) && sym !== undefined) {
+        for (const m of p.type.types) preconds.push({ sym, m });
+      }
       return undefined;
     });
+    // Proof arguments come after all value parameters, so calls stay positional.
+    binders.push(...hypBinders);
     const ret = inferredBool ? "Bool" : this.type(fn.type!, deps, typeParams, true);
-    const saved = [this.#currentFunction, this.#currentTypeParams, this.#currentTypeBinders] as const;
-    this.#currentFunction = { leanName, tsName: fn.name.text, ret };
+    const saved = [this.#currentFunction, this.#currentTypeParams, this.#currentTypeBinders, this.#runtime, this.#assumptions] as const;
+    this.#currentFunction = { leanName, tsName: fn.name.text, ret, preconds };
     this.#currentTypeParams = typeParams;
     this.#currentTypeBinders = typeBinders;
+    this.#runtime = true;
+    this.#assumptions = new Set();
+    const savedOnly = this.#onlyCounting;
+    this.#onlyCounting = true;
     let body: string;
+    let assumptions: string[];
     try {
-      body = ts.isBlock(fn.body) ? this.statements(fn.body.statements, 0, scope, deps, fn.node) : this.expr(fn.body, "value", scope, deps);
+      if (ts.isBlock(fn.body)) {
+        body = this.statements(fn.body.statements, 0, scope, deps, fn.node);
+      } else {
+        const fb = fn.body;
+        const g = this.#guarded(() => this.expr(fb, "value", scope, deps), deps);
+        body = g.haves + g.text;
+      }
+      assumptions = [...this.#assumptions];
+      if (this.#onlyCounting && ret === "Nat") this.#countingFns.add(leanName);
     } finally {
-      [this.#currentFunction, this.#currentTypeParams, this.#currentTypeBinders] = saved;
+      this.#onlyCounting = savedOnly;
+      [this.#currentFunction, this.#currentTypeParams, this.#currentTypeBinders, this.#runtime, this.#assumptions] = saved;
     }
     const recursive = deps.has(leanName);
     deps.delete(leanName);
     const source = `def ${leanName}${binders.map((b) => ` ${b}`).join("")} : ${ret} :=\n  ${indent(body, 2)}`;
-    const def: GeneratedDecl = { kind: "def", tsName: fn.name.text, leanName, node: fn.node, source, deps };
+    const def: GeneratedDecl = { kind: "def", tsName: fn.name.text, leanName, node: fn.node, source, deps, assumptions };
     this.decls.set(fn.node, def);
     this.#postconditions(fn, def, binders, scope, typeParams, recursive);
     return def;
@@ -622,6 +660,9 @@ export class Translator {
         return `(${this.local(t.exprName.left, scope)}).size`;
       }
       if (ts.isLiteralTypeNode(t) && ts.isNumericLiteral(t.literal)) return t.literal.text;
+      if (ts.isLiteralTypeNode(t) && ts.isPrefixUnaryExpression(t.literal) && t.literal.operator === ts.SyntaxKind.MinusToken && ts.isNumericLiteral(t.literal.operand)) {
+        return `(-${t.literal.operand.text} : Int)`;
+      }
       return this.type(t, deps, typeParams);
     };
     switch (kind) {
@@ -674,7 +715,7 @@ export class Translator {
         const lemmas: string[] = [];
         for (const l of loops) {
           const ldeps = new Set<string>([l.name]);
-          const lprop = this.refinementProp(m, `(${l.name}${l.args.filter((a) => !a.startsWith("inv_")).map((a) => ` ${a}`).join("")})`, l.scope, ldeps, typeParams);
+          const lprop = this.refinementProp(m, `(${l.name}${l.args.filter((a) => !/^(inv_|fpre_|size_)/.test(a)).map((a) => ` ${a}`).join("")})`, l.scope, ldeps, typeParams);
           if (lprop === undefined) continue;
           const unfold = this.#defClosure(ldeps, l.name).filter((d) => !loopNames.has(d));
           const lname = `${l.name}.post_${i}`;
@@ -776,7 +817,8 @@ export class Translator {
     const rest = (s: Scope): string => this.statements(sts, i + 1, s, deps, ctx, k, loop);
     if (ts.isReturnStatement(st)) {
       if (st.expression === undefined) return this.fail(st, "`return` needs a value");
-      return this.expr(st.expression, "value", scope, deps);
+      const r = this.#guarded(() => this.expr(st.expression!, "value", scope, deps), deps);
+      return r.haves + r.text;
     }
     if (ts.isBreakStatement(st) || ts.isContinueStatement(st)) {
       if (loop === undefined || st.label !== undefined) return this.fail(st, "`break`/`continue` (without labels) are only supported directly inside loops");
@@ -787,7 +829,9 @@ export class Translator {
       let s2 = scope;
       for (const d of st.declarationList.declarations) {
         if (!ts.isIdentifier(d.name) || d.initializer === undefined) return this.fail(d, "declarations need a name and an initial value");
-        const v = this.expr(d.initializer, "value", s2, deps);
+        const g = this.#guarded(() => this.expr(d.initializer!, "value", s2, deps), deps);
+        out += g.haves;
+        const v = g.text;
         const n = this.freshVar(d.name.text);
         const sym = this.checker.getSymbolAtLocation(d.name)!;
         const ty = d.type !== undefined ? this.type(d.type, deps, this.#currentTypeParams) : this.leanTypeOfKind(this.kindOf(d.initializer, s2), d);
@@ -799,8 +843,12 @@ export class Translator {
     if (ts.isExpressionStatement(st)) {
       const e = st.expression;
       if (ts.isSatisfiesExpression(e)) return this.assertion(e, scope, deps, rest);
-      const asg = this.assignment(e, scope, deps);
-      if (asg !== undefined) return `let ${asg.name} := ${asg.value}\n${rest(withLocal(scope, asg.sym, asg.name, scope.types?.get(asg.sym)))}`;
+      let asg: ReturnType<Translator["assignment"]>;
+      const g = this.#guarded(() => {
+        asg = this.assignment(e, scope, deps);
+        return "";
+      }, deps);
+      if (asg! !== undefined) return `${g.haves}let ${asg!.name} := ${asg!.value}\n${rest(withLocal(scope, asg!.sym, asg!.name, scope.types?.get(asg!.sym)))}`;
       return this.fail(st, "only assignments to local variables are supported as statements in the logic yet");
     }
     if (ts.isIfStatement(st)) {
@@ -836,6 +884,20 @@ export class Translator {
       return out + this.loop(st, st.initializer, st.condition, st.incrementor, st.statement, s2, deps, rest);
     }
     return this.fail(st, "this statement is not supported in functions used in the logic yet");
+  }
+
+  /** Translates with a fresh guard collector; returns the result and the `have` lines for its guards. */
+  #guarded(f: () => string, deps: Set<string>): { text: string; haves: string } {
+    const saved = this.#guards;
+    this.#guards = [];
+    try {
+      const text = f();
+      const tac = this.auto(deps);
+      const haves = this.#guards.map((g) => `have _ : ${g} := (${tac})\n`).join("");
+      return { text, haves };
+    } finally {
+      this.#guards = saved;
+    }
   }
 
   /** `e satisfies R;` outside a loop head: an assertion, proved where it stands. */
@@ -968,9 +1030,13 @@ export class Translator {
     const call = (s: Scope): string => `(${name}${params.map((p) => ` ${s.locals.get(p.sym)!}`).join("")})`;
     const next = (s: Scope): string => {
       if (update === undefined) return call(s);
-      const asg = this.assignment(update, s, deps);
-      if (asg === undefined) return this.fail(update, "unsupported loop update");
-      return `let ${asg.name} := ${asg.value}\n${call(withLocal(s, asg.sym, asg.name, s.types?.get(asg.sym)))}`;
+      let asg: ReturnType<Translator["assignment"]>;
+      const g = this.#guarded(() => {
+        asg = this.assignment(update, s, deps);
+        return "";
+      }, deps);
+      if (asg! === undefined) return this.fail(update, "unsupported loop update");
+      return `${g.haves}let ${asg!.name} := ${asg!.value}\n${call(withLocal(s, asg!.sym, asg!.name, s.types?.get(asg!.sym)))}`;
     };
     const targets: LoopTargets = { next, exit: after };
     // The exit branch (`after`) is translated in the helper's own scope.
@@ -984,13 +1050,34 @@ export class Translator {
     const helperDeps = new Set(deps);
     helperDeps.delete(name);
     const tps = this.#currentTypeBinders;
-    const binders = [...tps, ...params.map((p) => `(${p.name} : ${p.ty})`), ...invBinders];
+    // The enclosing function's preconditions hold throughout its loops.
+    const preBinders: string[] = [];
+    fn.preconds.forEach(({ sym, m }, idx) => {
+      const subject = inner.locals.get(sym);
+      if (subject === undefined) return;
+      const pd = new Set<string>();
+      const prop = this.refinementProp(m, subject, inner, pd, this.#currentTypeParams);
+      if (prop !== undefined) preBinders.push(`(fpre_${idx} : ${prop} := ${this.auto(pd)})`);
+    });
+    const sizeBinders = params.flatMap((p) => arraySizeBinder(p.name, p.ty));
+    const binders = [...tps, ...params.map((p) => `(${p.name} : ${p.ty})`), ...sizeBinders, ...preBinders, ...invBinders];
     const term = measure === undefined ? "" : `\ntermination_by ${measure}`;
     const source = `def ${name}${binders.map((b) => ` ${b}`).join("")} : ${fn.ret} :=\n  ${indent(helperBody, 2)}${term}`;
     const key = node;
-    this.decls.set(key, { kind: "def", tsName: `${fn.tsName} (loop)`, leanName: name, node, source, deps: helperDeps });
+    this.decls.set(key, { kind: "def", tsName: `${fn.tsName} (loop)`, leanName: name, node, source, deps: helperDeps, assumptions: [...this.#assumptions] });
     const list = this.#loops.get(fn.leanName) ?? [];
-    list.push({ name, args: [...params.map((p) => p.name), ...invariants.map((_, idx) => `inv_${idx}`)], binders, scope: inner, node });
+    list.push({
+      name,
+      args: [
+        ...params.map((p) => p.name),
+        ...params.flatMap((p) => arraySizeBinder(p.name, p.ty).map(() => `size_${p.name}`)),
+        ...preBinders.map((b) => /^\(([^ ]+) :/.exec(b)![1]!),
+        ...invariants.map((_, idx) => `inv_${idx}`),
+      ],
+      binders,
+      scope: inner,
+      node,
+    });
     this.#loops.set(fn.leanName, list);
     deps.add(name);
     return call(scope);
@@ -1084,7 +1171,12 @@ export class Translator {
     // which precondition and subtraction side conditions can use.
     const c = this.expr(cond, "prop", scope, deps);
     const h = this.freshVar("h");
-    return `if ${h} : ${c} then\n  ${indent(a(scope), 2)}\nelse\n  ${indent(b(scope), 2)}`;
+    const arm = (f: (s: Scope) => string): string => {
+      if (this.#guards === undefined) return f(scope);
+      const g = this.#guarded(() => f(scope), deps);
+      return g.haves + g.text;
+    };
+    return `if ${h} : ${c} then\n  ${indent(arm(a), 2)}\nelse\n  ${indent(arm(b), 2)}`;
   }
 
   local(id: ts.Identifier, scope: Scope): string {
@@ -1229,23 +1321,61 @@ export class Translator {
 
   /** Integer arithmetic with JavaScript's meaning on safe integers. */
   arith(k: ts.SyntaxKind, left: ts.Expression, right: ts.Expression, at: ts.Node, scope: Scope, deps: Set<string>): string {
-    for (const side of [left, right]) {
+    const kinds = [left, right].map((side) => {
       const kk = this.kindOf(side, scope);
       if (kk !== "nat" && kk !== "int" && kk !== "bigint" && kk !== "literal") {
         return this.fail(side, "arithmetic in the logic needs `nat`, `int` or `bigint` operands (`number` is IEEE-754 floating point)");
       }
-    }
-    void at;
+      return kk;
+    });
     const op = k === ts.SyntaxKind.PlusToken ? "+" : k === ts.SyntaxKind.AsteriskToken ? "*" : "-";
     const l = this.expr(left, "value", scope, deps);
     const r = this.expr(right, "value", scope, deps);
+    const guards: string[] = [];
     if (op === "-" && this.isNatExpr(left, scope)) {
       // In JavaScript the result could be negative; in Lean, Nat subtraction would
       // silently truncate. So the subtraction is only allowed where it is proved
       // not to go below zero.
-      return `(have _ : ${r} ≤ ${l} := (by first | omega | (simp_all <;> omega) | grind | decide); ${l} - ${r})`;
+      guards.push(`${r} ≤ ${l}`);
     }
-    return `(${l} ${op} ${r})`;
+    // D32: in running code, `nat`/`int` arithmetic is exact only up to 2^53 - 1.
+    // (`bigint` is exact; specs and theorems use exact arithmetic.)
+    const exact = kinds.includes("bigint") || !this.#runtime;
+    if (!exact && !(op === "-" && this.isNatExpr(left, scope))) {
+      if (op === "+" && this.isCounting(at) && countTerms(at) <= 64) {
+        // Counting (`1 + length(tail)`, `length(xs) + length(ys)`): every count is
+        // bounded by a recursion depth, and JavaScript's call stack overflows long
+        // before 2^30 frames, so a sum of up to 64 counts stays below 2^53.
+        this.#assumptions.add("recursion depth below 2^30");
+      } else {
+        this.#onlyCounting = false;
+        const v = `${l} ${op} ${r}`;
+        guards.push(kinds.includes("int") ? `-9007199254740991 ≤ ${v} ∧ ${v} ≤ 9007199254740991` : `${v} ≤ 9007199254740991`);
+      }
+    }
+    const body = `${l} ${op} ${r}`;
+    if (guards.length === 0) return `(${body})`;
+    if (this.#guards !== undefined) {
+      this.#guards.push(...guards);
+      return `(${body})`;
+    }
+    // Guards may need the predicates in scope (invariants, preconditions) unfolded.
+    const tac = this.auto(deps);
+    return `(${guards.map((g) => `have _ : ${g} := (${tac}); `).join("")}${body})`;
+  }
+
+  /** An addition of small constants and the current function's own recursive results. */
+  isCounting(e: ts.Node): boolean {
+    if (ts.isParenthesizedExpression(e)) return this.isCounting(e.expression);
+    if (ts.isNumericLiteral(e)) return /^[0-9]+$/.test(e.text) && Number(e.text) <= 4096;
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken) return this.isCounting(e.left) && this.isCounting(e.right);
+    if (ts.isCallExpression(e) && ts.isIdentifier(e.expression) && this.#currentFunction !== undefined) {
+      const d = this.declOf(e.expression);
+      if (d === undefined || fnLike(d) === undefined) return false;
+      const ln = this.leanNameOf(d as ts.FunctionDeclaration);
+      return ln === this.#currentFunction.leanName || this.#countingFns.has(ln);
+    }
+    return false;
   }
 
   isNatExpr(e: ts.Expression, scope: Scope): boolean {
@@ -1321,7 +1451,8 @@ export class Translator {
       if (k === ts.SyntaxKind.PlusToken || k === ts.SyntaxKind.AsteriskToken || k === ts.SyntaxKind.MinusToken) {
         const a = this.kindOf(e.left, scope);
         const b = this.kindOf(e.right, scope);
-        if (k === ts.SyntaxKind.MinusToken && (a === "nat" || a === "literal")) return "int";
+        // `nat - x` is translated as guarded natural subtraction (proved non-negative).
+        if (k === ts.SyntaxKind.MinusToken && a === "nat") return "nat";
         if (a === "int" || b === "int") return "int";
         if (a === "bigint" || b === "bigint") return "bigint";
         if ((a === "nat" || a === "literal") && (b === "nat" || b === "literal")) return a === "literal" && b === "literal" ? "literal" : "nat";
@@ -1550,7 +1681,9 @@ export class Translator {
       case "apply":
         return `apply ${this.term(args[0]!, scope, deps)}`;
       case "unfold":
-        return `unfold ${args.map((a) => this.lemmaRef(a, scope, deps)).join(" ")}`;
+        // `simp only []` clears the side-condition `have`s (overflow, subtraction guards)
+        // that ProofScript's translation puts in function bodies.
+        return `unfold ${args.map((a) => this.lemmaRef(a, scope, deps)).join(" ")} <;> try simp only []`;
       case "rw":
         return `rw [${args.map((a) => this.lemmaRef(a, scope, deps)).join(", ")}]`;
       case "allGoals":
@@ -1667,6 +1800,17 @@ export class Translator {
 /** Whether a binder name belongs to an implicit `{T : Type}`/`{n : Nat}` binder (not passed explicitly). */
 function b0IsType(name: string, binders: readonly string[]): boolean {
   return binders.some((b) => b.startsWith(`{${name} :`));
+}
+
+function countTerms(e: ts.Node): number {
+  if (ts.isParenthesizedExpression(e)) return countTerms(e.expression);
+  if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken) return countTerms(e.left) + countTerms(e.right);
+  return 1;
+}
+
+/** ECMAScript arrays have fewer than 2^32 elements: a fact about every JavaScript array. */
+function arraySizeBinder(name: string, leanType: string): string[] {
+  return leanType.startsWith("(Array ") ? [`(size_${name} : ${name}.size < 4294967296 := by first | omega | (simp_all <;> omega) | grind | decide)`] : [];
 }
 
 interface Continuation {

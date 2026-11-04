@@ -79,3 +79,17 @@ for (const name of ["bad-loop-invariant", "bad-loop-bounds", "bad-loop-terminati
     assert.ok(r.theorems.every((t) => t.status !== "verified"), "nothing is reported as verified");
   });
 }
+
+test("good-overflow: bounded arithmetic and counting verify; counting is listed as an assumption", { skip: !hasLean }, () => {
+  const r = run("good-overflow");
+  assert.deepEqual(r.diagnostics, []);
+  assert.ok(r.theorems.length >= 3 && r.theorems.every((t) => t.status === "verified"));
+  const len = r.theorems.find((t) => t.tsName.startsWith("length"))!;
+  assert.ok(len.assumptions.some((a) => /recursion depth/.test(a)));
+});
+
+test("bad-overflow: unbounded multiplication is rejected", { skip: !hasLean }, () => {
+  const r = run("bad-overflow");
+  assert.ok(r.diagnostics.length > 0);
+  assert.ok(r.theorems.every((t) => t.status !== "verified"));
+});

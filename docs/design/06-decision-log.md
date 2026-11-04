@@ -200,7 +200,8 @@ When a decision changes, update its entry and note the date rather than deleting
 - **Alternatives:** a full TypeScript elaborator and tactic suite (D25's original plan); keeping the native Lean dependency permanently.
 
 ### D32. Integer overflow in running code — **Decided** (2026-11-04)
-- **Chosen:** every runtime `+`, `-`, `*` on `nat`/`int` in reflected code carries a no-overflow obligation (the exact result stays within ±(2⁵³ − 1)), discharged automatically where possible. One stated environment assumption, listed in trust footprints: no data structure has 2⁵³ or more elements. Arithmetic in specs and theorems stays exact.
+- **Chosen:** every runtime `+`, `-`, `*` on `nat`/`int` in reflected code carries a no-overflow obligation (the exact result stays within ±(2⁵³ − 1)), discharged automatically where possible. Arithmetic in specs and theorems stays exact.
+- **Refinement during implementation (2026-11-04):** a size bound on data structures cannot be a logical axiom: in the logic, lists of every length exist, so such an axiom would be false and make everything provable. Environment assumptions about runtime values therefore live outside the logic, at the reflection boundary. Implemented as: (1) sums of small constants and counts produced by recursion (`1 + length(tail)`, `length(xs) + length(ys)`, at most 64 terms) are exempt, under the stated assumption "recursion depth below 2^30" (JavaScript's call stack overflows far earlier), which appears in trust footprints; (2) every array parameter carries the fact `length < 2^32`, an ECMAScript guarantee, as a precondition.
 - **Alternatives:** obligations with no size assumption (stricter; even counting a list's elements cannot be proved safe); keep trusting exactness (unsound for large values).
 
 Group C (D6–D16, surface syntax) stays **Default** until the syntax review at the end of M3 (D29).

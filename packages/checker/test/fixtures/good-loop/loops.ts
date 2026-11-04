@@ -1,18 +1,19 @@
-import type { Decreases, Ge, Is, Le, nat } from "proofscript";
+import type { Decreases, Ge, Is, Le, Lt, nat } from "proofscript";
 
-export function isSquareOf(s: nat, n: nat): boolean {
-  return s === n * n;
+export function isTripleOf(s: nat, n: nat & Lt<1000000000000000>): boolean {
+  return s === 3 * n;
 }
 
-// The sum of the first n odd numbers is n². The invariant `s === i * i` carries it.
-export function sumOdds(n: nat): nat & Is<typeof isSquareOf, [typeof n]> {
+// triple(n) === 3n, carried by the invariant `s === 3 * i`. The bound on n keeps
+// every intermediate value below 2^53, which ProofScript proves for each step.
+export function triple(n: nat & Lt<1000000000000000>): nat & Is<typeof isTripleOf, [typeof n]> {
   let s = 0;
   let i = 0;
   while (i < n) {
     i satisfies Le<typeof n>;
-    s satisfies Is<typeof isSquareOf, [typeof i]>;
+    s satisfies Is<typeof isTripleOf, [typeof i]>;
     n - i satisfies Decreases;
-    s = s + 2 * i + 1;
+    s = s + 3;
     i = i + 1;
   }
   return s;

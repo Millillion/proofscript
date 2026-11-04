@@ -17,6 +17,8 @@ export interface TheoremResult {
   readonly axioms: string[];
   /** TypeScript functions reflected into the logic that the result depends on (trusted translation). */
   readonly reflected: string[];
+  /** Environment assumptions those translations rely on (D32). */
+  readonly assumptions: string[];
 }
 
 export interface CheckResult {
@@ -60,7 +62,7 @@ export function checkProject(project: Project, workDir: string): CheckResult {
     return {
       diagnostics,
       unverified,
-      theorems: theorems.map((t) => ({ ...base(t, pos), status: "failed" as const, axioms: [], reflected: [] })),
+      theorems: theorems.map((t) => ({ ...base(t, pos), status: "failed" as const, axioms: [], reflected: [], assumptions: [] })),
       declarationsChecked: 0,
     };
   }
@@ -78,18 +80,20 @@ export function checkProject(project: Project, workDir: string): CheckResult {
   } catch (e) {
     if (!(e instanceof KernelError)) throw e;
     diagnostics.push({ file: "", line: 0, column: 0, message: `the ProofScript kernel rejected the proof terms Lean produced: ${e.message}` });
-    return { diagnostics, unverified, theorems: theorems.map((t) => ({ ...base(t, pos), status: "failed" as const, axioms: [], reflected: [] })), declarationsChecked: count };
+    return { diagnostics, unverified, theorems: theorems.map((t) => ({ ...base(t, pos), status: "failed" as const, axioms: [], reflected: [], assumptions: [] })), declarationsChecked: count };
   }
 
   const defNames = new Map(decls.filter((d) => d.kind === "def").map((d) => [d.leanName, d.tsName]));
+  const defAssumptions = new Map(decls.filter((d) => d.kind === "def").map((d) => [d.leanName, d.assumptions ?? []]));
   const results = theorems.map((t) => {
     const c = kernel.env.get(kname(t.leanName));
     if (c === undefined || c.kind !== "theorem") {
       diagnostics.push({ ...pos(t), message: `internal error: ${t.leanName} missing from the export` });
-      return { ...base(t, pos), status: "failed" as const, axioms: [], reflected: [] };
+      return { ...base(t, pos), status: "failed" as const, axioms: [], reflected: [], assumptions: [] };
     }
-    const { axioms, reflected } = footprint(kernel, c, defNames);
-    return { ...base(t, pos), status: axioms.includes("sorry") ? ("admitted" as const) : ("verified" as const), axioms, reflected };
+    const { axioms, reflected, leanDefs } = footprint(kernel, c, defNames);
+    const assumptions = [...new Set(leanDefs.flatMap((d) => defAssumptions.get(d) ?? []))].sort();
+    return { ...base(t, pos), status: axioms.includes("sorry") ? ("admitted" as const) : ("verified" as const), axioms, reflected, assumptions };
   });
   return { diagnostics, unverified, theorems: results, declarationsChecked: count };
 }
@@ -118,7 +122,11 @@ function base(t: GeneratedDecl, pos: (d: GeneratedDecl) => Diagnostic) {
 }
 
 /** Transitive axioms (Lean's `#print axioms`) and reflected TypeScript functions a constant depends on. */
-export function footprint(kernel: Kernel, root: ConstantInfo, defNames: ReadonlyMap<string, string>): { axioms: string[]; reflected: string[] } {
+export function footprint(
+  kernel: Kernel,
+  root: ConstantInfo,
+  defNames: ReadonlyMap<string, string>,
+): { axioms: string[]; reflected: string[]; leanDefs: string[] } {
   const seen = new Set<string>();
   const axioms = new Set<string>();
   const stack: ConstantInfo[] = [root];
@@ -136,17 +144,21 @@ export function footprint(kernel: Kernel, root: ConstantInfo, defNames: Readonly
       return true;
     });
   const reflected = new Set<string>();
+  const leanDefs = new Set<string>();
   while (stack.length > 0) {
     const c = stack.pop()!;
     const cn = nameToString(c.name);
     const ts = defNames.get(cn);
-    if (ts !== undefined) reflected.add(ts);
+    if (ts !== undefined) {
+      reflected.add(ts);
+      leanDefs.add(cn);
+    }
     if (c.kind === "axiom") axioms.add(cn === "sorryAx" ? "sorry" : cn);
     push(c.type);
     if ("value" in c) push(c.value);
     if (c.kind === "recursor") for (const r of c.rules) push(r.rhs);
   }
-  return { axioms: [...axioms].sort(), reflected: [...reflected].sort() };
+  return { axioms: [...axioms].sort(), reflected: [...reflected].sort(), leanDefs: [...leanDefs] };
 }
 
 export function formatResult(r: CheckResult, rootDir: string): string {
@@ -159,7 +171,7 @@ export function formatResult(r: CheckResult, rootDir: string): string {
   for (const t of r.theorems) {
     const extra = t.axioms.filter((a) => !STANDARD_AXIOMS.has(a));
     const mark = t.status === "verified" ? (extra.length > 0 ? "⚠" : "✓") : t.status === "admitted" ? "⚠" : "✗";
-    const ax = (t.axioms.length === 0 ? "no axioms" : `axioms: ${t.axioms.join(", ")}`) + (t.reflected.length === 0 ? "" : `; trusts the translation of ${t.reflected.join(", ")}`);
+    const ax = (t.axioms.length === 0 ? "no axioms" : `axioms: ${t.axioms.join(", ")}`) + (t.reflected.length === 0 ? "" : `; trusts the translation of ${t.reflected.join(", ")}`) + (t.assumptions.length === 0 ? "" : `; assumes ${t.assumptions.join(", ")}`);
     lines.push(`${mark} ${t.tsName} (${relative(rootDir, t.file)}:${t.line}) — ${t.status}, ${ax}`);
   }
   const verified = r.theorems.filter((t) => t.status === "verified").length;
