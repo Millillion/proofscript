@@ -51,7 +51,7 @@ export interface Translation {
 }
 
 /** ProofScript types that refine a carrier type (erased to the carrier in the logic for now). */
-const REFINEMENTS = new Set(["Lt", "Le", "Gt", "Ge", "Length", "Is", "Simp"]);
+const REFINEMENTS = new Set(["Lt", "Le", "Gt", "Ge", "Length", "Is", "Holds", "Modifies", "Simp"]);
 
 type Mode = "value" | "prop";
 
@@ -141,6 +141,8 @@ export class Translator {
    * free of proofs. `undefined`: emit inline (inside lambdas).
    */
   #guards: string[] | undefined;
+  /** Number of side-condition guards emitted so far (to decide whether length facts are needed). */
+  #guardCount = 0;
   /** Inside a function body (running code): arithmetic must be proved not to overflow (D32). */
   #runtime = false;
   /** Environment assumptions used while translating the current function. */
@@ -150,7 +152,22 @@ export class Translator {
   /** Functions returning a count: every result is a sum of small constants and counts. */
   readonly #countingFns = new Set<string>();
   /** The function being translated (loop helpers are named after it and share its return type). */
-  #currentFunction: { leanName: string; tsName: string; ret: string; preconds: { sym: ts.Symbol; m: ts.TypeNode }[] } | undefined;
+  #currentFunction:
+    | {
+        leanName: string;
+        tsName: string;
+        ret: string;
+        preconds: { sym: ts.Symbol; m: ts.TypeNode }[];
+        /** Parameters the function may modify (`Modifies<typeof a>`), in order. */
+        mods: ts.Symbol[];
+        /** Pseudo-symbols holding each modified parameter's value on entry (for `Old`). */
+        oldKeys: Map<ts.Symbol, ts.Symbol>;
+      }
+    | undefined;
+  /** Old-value pseudo-symbols per function (for loop lemmas). */
+  readonly #loopOldKeys = new Map<string, Map<ts.Symbol, ts.Symbol>>();
+  /** While generating postconditions: Lean names of parameters' values on entry. */
+  #postOld: Map<ts.Symbol, string> | undefined;
   #fresh = 0;
 
   constructor(project: Project) {
@@ -245,7 +262,7 @@ export class Translator {
     return (
       t !== undefined &&
       ts.isIntersectionTypeNode(t) &&
-      t.types.some((m) => ts.isTypeReferenceNode(m) && ["Lt", "Le", "Gt", "Ge", "Is"].includes(this.ps(m.typeName) ?? ""))
+      t.types.some((m) => ts.isTypeReferenceNode(m) && ["Lt", "Le", "Gt", "Ge", "Is", "Holds", "Modifies"].includes(this.ps(m.typeName) ?? ""))
     );
   }
 
@@ -347,6 +364,8 @@ export class Translator {
     switch (t.kind) {
       case ts.SyntaxKind.BooleanKeyword:
         return "Bool";
+      case ts.SyntaxKind.VoidKeyword:
+        return "Unit";
       case ts.SyntaxKind.StringKeyword:
         // JavaScript strings are sequences of UTF-16 code units (lone surrogates included).
         return "(List UInt16)";
@@ -460,8 +479,8 @@ export class Translator {
       for (const p of ms) {
         if (!ts.isPropertySignature(p) || p.type === undefined || !ts.isIdentifier(p.name)) return this.fail(p, "unsupported member");
         if (p.questionToken !== undefined) return this.fail(p, "optional fields are not supported in inductive types");
-        if (!p.modifiers?.some((mod) => mod.kind === ts.SyntaxKind.ReadonlyKeyword)) {
-          return this.fail(p, "fields of inductive types must be `readonly` (mutable data is not part of the logic)");
+        if (!p.modifiers?.some((mod) => mod.kind === ts.SyntaxKind.ReadonlyKeyword) && members.length !== 1) {
+          return this.fail(p, "fields of discriminated unions must be `readonly` (mutable fields are supported on plain object types)");
         }
         if (p.name.text === "tag") {
           if (!ts.isLiteralTypeNode(p.type) || !ts.isStringLiteral(p.type.literal)) return this.fail(p, "`tag` must be a string literal type");
@@ -617,9 +636,24 @@ export class Translator {
     });
     // Proof arguments come after all value parameters, so calls stay positional.
     binders.push(...hypBinders);
-    const ret = inferredBool ? "Bool" : this.type(fn.type!, deps, typeParams, true);
+    const value = inferredBool ? "Bool" : this.type(fn.type!, deps, typeParams, true);
+    // `Modifies<typeof a>`: the function also returns the new value of each modified argument.
+    const mods = this.modifiedParams(fn);
+    for (const m of mods) {
+      const ty = types.get(m);
+      if (ty === undefined || !isMutableType(ty)) return this.fail(fn.type!, `\`Modifies\` names a parameter that is not an array or a plain object`);
+    }
+    const ret = mods.length === 0 ? value : `(${value} × ${mods.map((m) => types.get(m)!).join(" × ")})`;
+    const oldKeys = new Map<ts.Symbol, ts.Symbol>();
+    for (const m of mods) {
+      const k = { name: `${m.getName()}_old` } as unknown as ts.Symbol;
+      oldKeys.set(m, k);
+      scope.locals.set(k, scope.locals.get(m)!);
+      types.set(k, types.get(m)!);
+    }
     const saved = [this.#currentFunction, this.#currentTypeParams, this.#currentTypeBinders, this.#runtime, this.#assumptions] as const;
-    this.#currentFunction = { leanName, tsName: fn.name.text, ret, preconds };
+    this.#currentFunction = { leanName, tsName: fn.name.text, ret, preconds, mods, oldKeys };
+    this.#loopOldKeys.set(leanName, oldKeys);
     this.#currentTypeParams = typeParams;
     this.#currentTypeBinders = typeBinders;
     this.#runtime = true;
@@ -628,13 +662,21 @@ export class Translator {
     this.#onlyCounting = true;
     let body: string;
     let assumptions: string[];
+    const guardsBefore = this.#guardCount;
     try {
       if (ts.isBlock(fn.body)) {
-        body = this.statements(fn.body.statements, 0, scope, deps, fn.node);
+        // A `void` function may fall off the end: it returns `()` (and the modified arguments).
+        const k: Continuation | undefined = value === "Unit" ? { next: (s) => this.returnTuple("()", s) } : undefined;
+        body = this.statements(fn.body.statements, 0, scope, deps, fn.node, k);
       } else {
         const fb = fn.body;
         const g = this.#guarded(() => this.expr(fb, "value", scope, deps), deps);
         body = g.haves + g.text;
+      }
+      if (mods.length > 0 && isExported(fn.node)) this.#assumptions.add("callers do not alias modified arguments");
+      // The "length < 2^32" facts on array parameters only serve overflow checks.
+      if (this.#guardCount === guardsBefore) {
+        for (let k = binders.length - 1; k >= 0; k--) if (binders[k]!.startsWith("(size_")) binders.splice(k, 1);
       }
       assumptions = [...this.#assumptions];
       if (this.#onlyCounting && ret === "Nat") this.#countingFns.add(leanName);
@@ -644,7 +686,10 @@ export class Translator {
     }
     const recursive = deps.has(leanName);
     deps.delete(leanName);
-    const source = `def ${leanName}${binders.map((b) => ` ${b}`).join("")} : ${ret} :=\n  ${indent(body, 2)}`;
+    // Non-recursive predicates are simp lemmas, so any side-condition tactic (including a
+    // callee's precondition check) can unfold them; recursive ones could make simp loop.
+    const attr = ret === "Bool" && !recursive ? "@[simp] " : "";
+    const source = `${attr}def ${leanName}${binders.map((b) => ` ${b}`).join("")} : ${ret} :=\n  ${indent(body, 2)}`;
     const def: GeneratedDecl = { kind: "def", tsName: fn.name.text, leanName, node: fn.node, source, deps, assumptions };
     this.decls.set(fn.node, def);
     this.#postconditions(fn, def, binders, scope, typeParams, recursive);
@@ -674,6 +719,14 @@ export class Translator {
     const kind = this.ps(m.typeName);
     const args = m.typeArguments ?? [];
     const value = (t: ts.TypeNode): string => {
+      if (ts.isTypeReferenceNode(t) && this.ps(t.typeName) === "Old") {
+        const a = t.typeArguments?.[0];
+        if (a === undefined || !ts.isTypeQueryNode(a) || !ts.isIdentifier(a.exprName)) return this.fail(t, "`Old` takes `typeof parameter`");
+        const sym = this.checker.getSymbolAtLocation(a.exprName);
+        const old = sym === undefined ? undefined : this.#postOld?.get(sym);
+        if (old === undefined) return this.fail(t, "`Old` is only meaningful in a postcondition, for a parameter named in `Modifies`");
+        return old;
+      }
       if (ts.isTypeQueryNode(t) && ts.isIdentifier(t.exprName)) return this.local(t.exprName, scope);
       if (ts.isTypeQueryNode(t) && ts.isQualifiedName(t.exprName) && t.exprName.right.text === "length" && ts.isIdentifier(t.exprName.left)) {
         return `(${this.local(t.exprName.left, scope)}).size`;
@@ -703,6 +756,17 @@ export class Translator {
         const extra = args[1] === undefined ? [] : ts.isTupleTypeNode(args[1]) ? args[1].elements.map((e) => value(e as ts.TypeNode)) : this.fail(args[1], "expected a tuple of arguments");
         return `${pn} ${subject}${extra.map((x) => ` ${x}`).join("")} = true`;
       }
+      case "Holds": {
+        const pred = args[0];
+        if (pred === undefined || !ts.isTypeQueryNode(pred) || !ts.isIdentifier(pred.exprName)) return this.fail(m, "`Holds` takes `typeof predicate`");
+        const decl = this.declOf(pred.exprName);
+        if (decl === undefined || fnLike(decl) === undefined) return this.fail(pred, "predicates in `Holds` must be functions declared in your project");
+        const pn = this.requireDecl(decl);
+        deps.add(pn);
+        const xs = args[1] === undefined ? [] : ts.isTupleTypeNode(args[1]) ? args[1].elements.map((e) => value(e as ts.TypeNode)) : this.fail(args[1], "expected a tuple of arguments");
+        void subject;
+        return `${pn}${xs.map((x) => ` ${x}`).join("")} = true`;
+      }
       default:
         return undefined;
     }
@@ -723,10 +787,22 @@ export class Translator {
     const allArgs = binders.map((b) => /^[({]([^ ]+) :/.exec(b)?.[1]).filter((x): x is string => x !== undefined && !b0IsType(x, binders));
     const loops = this.#loops.get(def.leanName) ?? [];
     const loopNames = new Set(loops.map((l) => l.name));
+    // For modifying functions, the Lean result is (value, new states…): postconditions
+    // see the new states as `typeof a` and the values on entry as `Old<typeof a>`.
+    const mods = this.modifiedParams(fn);
+    const view = (callExpr: string, base: Scope, old: (sym: ts.Symbol) => string): { subject: string; sc: Scope } => {
+      if (mods.length === 0) return { subject: callExpr, sc: base };
+      const locals = new Map(base.locals);
+      mods.forEach((m, j) => locals.set(m, `${callExpr}${stateProj(j, mods.length)}`));
+      this.#postOld = new Map(mods.map((m) => [m, old(m)]));
+      return { subject: `${callExpr}.1`, sc: { ...base, locals } };
+    };
     rt.types.forEach((m, i) => {
       this.#guard(() => {
+        this.#postOld = undefined;
         const deps = new Set<string>([def.leanName]);
-        const prop = this.refinementProp(m, call, scope, deps, typeParams);
+        const fv = view(call, scope, (sym) => scope.locals.get(sym)!);
+        const prop = this.refinementProp(m, fv.subject, fv.sc, deps, typeParams);
         if (prop === undefined) return;
         // Loop helpers return the function's final result, so the postcondition is
         // proved for each helper (innermost first) by induction over its iterations,
@@ -734,7 +810,10 @@ export class Translator {
         const lemmas: string[] = [];
         for (const l of loops) {
           const ldeps = new Set<string>([l.name]);
-          const lprop = this.refinementProp(m, `(${l.name}${l.args.filter((a) => !/^(inv_|fpre_|size_)/.test(a)).map((a) => ` ${a}`).join("")})`, l.scope, ldeps, typeParams);
+          const lcall = `(${l.name}${l.args.filter((a) => !/^(inv_|fpre_|size_)/.test(a)).map((a) => ` ${a}`).join("")})`;
+          const oldKeys = this.#loopOldKeys.get(def.leanName);
+          const lv = view(lcall, l.scope, (sym) => l.scope.locals.get(oldKeys?.get(sym) ?? sym)!);
+          const lprop = this.refinementProp(m, lv.subject, lv.sc, ldeps, typeParams);
           if (lprop === undefined) continue;
           const unfold = this.#defClosure(ldeps, l.name).filter((d) => !loopNames.has(d));
           const lname = `${l.name}.post_${i}`;
@@ -788,7 +867,7 @@ export class Translator {
   auto(propDeps: Iterable<string>): string {
     const defs = this.#defClosure(propDeps, "").filter((d) => !this.#isLoopHelper(d));
     const set = defs.length === 0 ? "" : ` [${defs.join(", ")}]`;
-    return `by first | omega | (simp_all${set} <;> omega) | (simp_all${set} <;> grind) | grind | decide`;
+    return `by first | omega | (simp_all${set} <;> omega) | (simp_all${set} <;> grind) | (simp_all (config := { zetaDelta := true })${set} <;> omega) | grind | decide`;
   }
 
   #isLoopHelper(name: string): boolean {
@@ -835,9 +914,20 @@ export class Translator {
     }
     const rest = (s: Scope): string => this.statements(sts, i + 1, s, deps, ctx, k, loop);
     if (ts.isReturnStatement(st)) {
-      if (st.expression === undefined) return this.fail(st, "`return` needs a value");
-      const r = this.#guarded(() => this.expr(st.expression!, "value", scope, deps), deps);
-      return r.haves + r.text;
+      if (st.expression === undefined) {
+        if (this.#currentFunction?.ret.startsWith("Unit") || this.#currentFunction?.ret.startsWith("(Unit ×")) return this.returnTuple("()", scope);
+        return this.fail(st, "`return` needs a value");
+      }
+      const re = st.expression;
+      if (ts.isIdentifier(re) && this.isMutableExpr(re)) {
+        const d = this.declOf(re);
+        if (d !== undefined && ts.isParameter(d)) return this.fail(re, "returning an array or object parameter would alias it; return a new one (aliasing is not supported)");
+      }
+      if (ts.isCallExpression(re) && this.modifyingCallee(re) !== undefined) {
+        return this.fail(re, "a call that modifies its arguments must be a statement of its own");
+      }
+      const r = this.#guarded(() => this.expr(re, "value", scope, deps), deps);
+      return r.haves + this.returnTuple(r.text, scope);
     }
     if (ts.isBreakStatement(st) || ts.isContinueStatement(st)) {
       if (loop === undefined || st.label !== undefined) return this.fail(st, "`break`/`continue` (without labels) are only supported directly inside loops");
@@ -848,6 +938,16 @@ export class Translator {
       let s2 = scope;
       for (const d of st.declarationList.declarations) {
         if (!ts.isIdentifier(d.name) || d.initializer === undefined) return this.fail(d, "declarations need a name and an initial value");
+        if (ts.isIdentifier(d.initializer) && this.isMutableExpr(d.initializer)) {
+          return this.fail(d.initializer, "copying a reference to an array or object would alias it (aliasing is not supported)");
+        }
+        if (ts.isCallExpression(d.initializer) && this.modifyingCallee(d.initializer) !== undefined) {
+          if (st.declarationList.declarations.length !== 1) return this.fail(d, "declare the result of a modifying call on its own");
+          const sym = this.checker.getSymbolAtLocation(d.name)!;
+          const fl = this.modifyingCallee(d.initializer)!.fl;
+          const vt = fl.type !== undefined ? this.type(fl.type, deps, this.#currentTypeParams) : "Bool";
+          return out + this.modifyingCallStatement(d.initializer, { sym, name: this.freshVar(d.name.text), ty: vt }, s2, deps, rest);
+        }
         const g = this.#guarded(() => this.expr(d.initializer!, "value", s2, deps), deps);
         out += g.haves;
         const v = g.text;
@@ -862,6 +962,22 @@ export class Translator {
     if (ts.isExpressionStatement(st)) {
       const e = st.expression;
       if (ts.isSatisfiesExpression(e)) return this.assertion(e, scope, deps, rest);
+      if (ts.isCallExpression(e) && this.modifyingCallee(e) !== undefined) return this.modifyingCallStatement(e, undefined, scope, deps, rest);
+      if (ts.isCallExpression(e) && ts.isPropertyAccessExpression(e.expression) && e.expression.name.text === "push" && ts.isIdentifier(e.expression.expression) && this.isArrayExpr(e.expression.expression)) {
+        // `a.push(v)`: a new version of the local array. JavaScript throws if the length
+        // would reach 2^32, so the new length must be proved below it.
+        const a = e.expression.expression;
+        this.checkMayModify(a);
+        const sym = this.checker.getSymbolAtLocation(a)!;
+        if (!scope.locals.has(sym)) return this.fail(a, "only local arrays can be modified in the logic yet");
+        if (e.arguments.length !== 1) return this.fail(e, "`push` with one argument is supported in the logic yet");
+        const cur = scope.locals.get(sym)!;
+        const g = this.#guarded(() => this.expr(e.arguments[0]!, "value", scope, deps), deps);
+        const n = this.freshVar(sym.getName());
+        const guard = `have _ : ${cur}.size + 1 < 4294967296 := (${this.auto(deps)})\n`;
+        this.#guardCount++;
+        return `${g.haves}${guard}let ${n} := ${cur}.push ${g.text}\n${rest(withLocal(scope, sym, n, scope.types?.get(sym)))}`;
+      }
       let asg: ReturnType<Translator["assignment"]>;
       const g = this.#guarded(() => {
         asg = this.assignment(e, scope, deps);
@@ -955,8 +1071,39 @@ export class Translator {
         [ts.SyntaxKind.MinusEqualsToken]: ts.SyntaxKind.MinusToken,
         [ts.SyntaxKind.AsteriskEqualsToken]: ts.SyntaxKind.AsteriskToken,
       };
+      if (op === ts.SyntaxKind.EqualsToken && ts.isElementAccessExpression(e.left) && ts.isIdentifier(e.left.expression) && this.isArrayExpr(e.left.expression)) {
+        // `a[i] = v`: only in bounds (JavaScript would otherwise grow the array, leaving holes).
+        this.checkMayModify(e.left.expression);
+        const sym = target(e.left.expression);
+        const ik = this.kindOf(e.left.argumentExpression, scope);
+        if (ik !== "nat" && ik !== "literal") return this.fail(e.left.argumentExpression, "array indices in the logic must be `nat`");
+        const a = scope.locals.get(sym)!;
+        const i = this.expr(e.left.argumentExpression, "value", scope, deps);
+        return { sym, name: this.freshVar(sym.getName()), value: `(${a}.set ${i} ${this.expr(e.right, "value", scope, deps)} ${IDX_PROOF})` };
+      }
+      if (op === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(e.left) && ts.isIdentifier(e.left.expression)) {
+        // `p.f = v` on a plain object: a new version with that field replaced.
+        this.checkMayModify(e.left.expression);
+        const sym = target(e.left.expression);
+        const shape = this.shapeOfType(this.checker.getTypeAtLocation(e.left.expression));
+        if (shape === undefined || !shape.tagless) return this.fail(e.left, "only fields of plain object types can be assigned in the logic yet");
+        const c = shape.ctors[0]!;
+        const idx = c.fields.findIndex((f) => f.name === (e.left as ts.PropertyAccessExpression).name.text);
+        if (idx < 0) return this.fail(e.left, "unknown field");
+        const vars = c.fields.map((f) => this.freshVar(f.name));
+        const v = this.expr(e.right, "value", scope, deps);
+        const args = vars.map((x, k) => (k === idx ? v : x));
+        return {
+          sym,
+          name: this.freshVar(sym.getName()),
+          value: `(match ${scope.locals.get(sym)!} with | .mk${vars.map((x) => ` ${x}`).join("")} => ${shape.leanName}.mk${args.map((x) => ` ${x}`).join("")})`,
+        };
+      }
       if (op === ts.SyntaxKind.EqualsToken) {
         const sym = target(e.left);
+        if (ts.isIdentifier(e.right) && this.isMutableExpr(e.right)) {
+          return this.fail(e.right, "copying a reference to an array or object would alias it (aliasing is not supported)");
+        }
         return { sym, name: this.freshVar(sym.getName()), value: this.expr(e.right, "value", scope, deps) };
       }
       const bop = compound[op];
@@ -973,6 +1120,91 @@ export class Translator {
       return { sym, name: this.freshVar(sym.getName()), value: this.arith(bop, e.operand, one, e, scope, deps) };
     }
     return undefined;
+  }
+
+  /** Parameters named by `Modifies<typeof p>` in the function's return type. */
+  modifiedParams(fn: FnLike): ts.Symbol[] {
+    const t = fn.type;
+    if (t === undefined || !ts.isIntersectionTypeNode(t)) return [];
+    const out: ts.Symbol[] = [];
+    for (const m of t.types) {
+      if (!ts.isTypeReferenceNode(m) || this.ps(m.typeName) !== "Modifies") continue;
+      const a = m.typeArguments?.[0];
+      if (a === undefined || !ts.isTypeQueryNode(a) || !ts.isIdentifier(a.exprName)) return this.fail(m, "`Modifies` takes `typeof parameter`");
+      const sym = this.checker.getSymbolAtLocation(a.exprName);
+      if (sym === undefined || !fn.parameters.some((p) => ts.isIdentifier(p.name) && this.checker.getSymbolAtLocation(p.name) === sym)) {
+        return this.fail(a, "`Modifies` must name a parameter of this function");
+      }
+      out.push(sym);
+    }
+    return out;
+  }
+
+  /**
+   * A parameter may only be mutated if the function declares `Modifies<typeof p>`;
+   * otherwise the caller's view (and the logic) would miss the change.
+   */
+  checkMayModify(id: ts.Identifier): void {
+    const sym = this.checker.getSymbolAtLocation(id);
+    const d = this.declOf(id);
+    if (sym === undefined || d === undefined || !ts.isParameter(d) || !this.isMutableExpr(id)) return;
+    if (!(this.#currentFunction?.mods ?? []).includes(sym)) {
+      this.fail(id, `\`${id.text}\` is a parameter: declare \`Modifies<typeof ${id.text}>\` in the return type to change it`);
+    }
+  }
+
+  /** The value a `return` produces: the result, plus the modified arguments' current values. */
+  returnTuple(value: string, scope: Scope): string {
+    const mods = this.#currentFunction?.mods ?? [];
+    if (mods.length === 0) return value;
+    return `(${value}, ${mods.map((m) => scope.locals.get(m)!).join(", ")})`;
+  }
+
+  /** If `e` calls a function with `Modifies`, the parameter indices it modifies. */
+  modifyingCallee(e: ts.CallExpression): { fl: FnLike; modIdx: number[] } | undefined {
+    if (!ts.isIdentifier(e.expression)) return undefined;
+    const fl = fnLike(this.declOf(e.expression));
+    if (fl === undefined) return undefined;
+    const mods = this.modifiedParams(fl);
+    if (mods.length === 0) return undefined;
+    const modIdx = fl.parameters.map((p, i) => (ts.isIdentifier(p.name) && mods.includes(this.checker.getSymbolAtLocation(p.name)!) ? i : -1)).filter((i) => i >= 0);
+    return { fl, modIdx };
+  }
+
+  /**
+   * A call to a modifying function, as a statement: binds the result (if `bind`) and
+   * rebinds each modified argument to its new value. Arguments for modified
+   * parameters must be distinct local variables (no aliasing).
+   */
+  modifyingCallStatement(e: ts.CallExpression, bind: { sym: ts.Symbol; name: string; ty: string } | undefined, scope: Scope, deps: Set<string>, rest: (s: Scope) => string): string {
+    const info = this.modifyingCallee(e)!;
+    const argSyms: ts.Symbol[] = [];
+    for (const i of info.modIdx) {
+      const a = e.arguments[i];
+      if (a === undefined || !ts.isIdentifier(a)) return this.fail(e, "an argument the callee modifies must be a local variable");
+      const sym = this.checker.getSymbolAtLocation(a)!;
+      if (!scope.locals.has(sym)) return this.fail(a, "an argument the callee modifies must be a local variable");
+      this.checkMayModify(a);
+      argSyms.push(sym);
+    }
+    // No aliasing: a modified argument must not appear as any other argument.
+    e.arguments.forEach((a, i) => {
+      if (!ts.isIdentifier(a)) return;
+      const sym = this.checker.getSymbolAtLocation(a);
+      info.modIdx.forEach((mi, k) => {
+        if (mi !== i && sym === argSyms[k]) this.fail(a, "the same array or object is passed twice to a function that modifies it (aliasing is not supported)");
+      });
+    });
+    const g = this.#guarded(() => this.callText(e, scope, deps), deps);
+    const res = bind?.name ?? this.freshVar("_r");
+    let s2 = scope;
+    const newNames = argSyms.map((sym) => {
+      const n = this.freshVar(sym.getName());
+      s2 = withLocal(s2, sym, n, scope.types?.get(sym));
+      return n;
+    });
+    if (bind !== undefined) s2 = withLocal(s2, bind.sym, bind.name, bind.ty);
+    return `${g.haves}let (${[res, ...newNames].join(", ")}) := ${g.text}\n${rest(s2)}`;
   }
 
   /** Lean type for a local whose type TypeScript inferred. */
@@ -1059,6 +1291,7 @@ export class Translator {
     };
     const targets: LoopTargets = { next, exit: after };
     // The exit branch (`after`) is translated in the helper's own scope.
+    const loopGuardsBefore = this.#guardCount;
     const helperBody = this.branch(
       cond,
       (s) => this.statements(body, j, s, deps, bodySt, { next }, targets),
@@ -1078,7 +1311,7 @@ export class Translator {
       const prop = this.refinementProp(m, subject, inner, pd, this.#currentTypeParams);
       if (prop !== undefined) preBinders.push(`(fpre_${idx} : ${prop} := ${this.auto(pd)})`);
     });
-    const sizeBinders = params.flatMap((p) => arraySizeBinder(p.name, p.ty));
+    const sizeBinders = this.#guardCount === loopGuardsBefore ? [] : params.flatMap((p) => arraySizeBinder(p.name, p.ty));
     const binders = [...tps, ...params.map((p) => `(${p.name} : ${p.ty})`), ...sizeBinders, ...preBinders, ...invBinders];
     const term = measure === undefined ? "" : `\ntermination_by ${measure}`;
     const source = `def ${name}${binders.map((b) => ` ${b}`).join("")} : ${fn.ret} :=\n  ${indent(helperBody, 2)}${term}`;
@@ -1089,7 +1322,7 @@ export class Translator {
       name,
       args: [
         ...params.map((p) => p.name),
-        ...params.flatMap((p) => arraySizeBinder(p.name, p.ty).map(() => `size_${p.name}`)),
+        ...sizeBinders.map((b) => /^\(([^ ]+) :/.exec(b)![1]!),
         ...preBinders.map((b) => /^\(([^ ]+) :/.exec(b)![1]!),
         ...invariants.map((_, idx) => `inv_${idx}`),
       ],
@@ -1207,6 +1440,13 @@ export class Translator {
 
   // ---- Expressions ---------------------------------------------------------------------------
 
+  /** Arrays and plain object types with a mutable field: values whose aliasing matters. */
+  isMutableExpr(e: ts.Expression): boolean {
+    if (this.isArrayExpr(e)) return true;
+    const shape = this.shapeOfType(this.checker.getTypeAtLocation(e));
+    return shape !== undefined && shape.tagless;
+  }
+
   isStringExpr(e: ts.Expression): boolean {
     return (this.checker.getTypeAtLocation(e).flags & ts.TypeFlags.StringLike) !== 0;
   }
@@ -1259,7 +1499,7 @@ export class Translator {
       if (ik !== "nat" && ik !== "literal") return this.fail(e.argumentExpression, "array indices in the logic must be `nat` (a negative index reads `undefined` in JavaScript)");
       // Lean's `a[i]` must prove `i < a.size` from the context, exactly the condition
       // under which JavaScript's `a[i]` is an element rather than `undefined`.
-      const r = `${this.expr(e.expression, "value", scope, deps)}[${this.expr(e.argumentExpression, "value", scope, deps)}]`;
+      const r = `(${this.expr(e.expression, "value", scope, deps)}[${this.expr(e.argumentExpression, "value", scope, deps)}]'${IDX_PROOF})`;
       return this.coerceProp(e, r, mode);
     }
     if (ts.isPropertyAccessExpression(e)) {
@@ -1299,6 +1539,10 @@ export class Translator {
     if (ts.isBinaryExpression(e)) return this.binary(e, mode, scope, deps);
     if (ts.isCallExpression(e)) return this.call(e, mode, scope, deps);
     if (ts.isObjectLiteralExpression(e)) return this.objectLiteral(e, scope, deps);
+    if (ts.isArrayLiteralExpression(e)) {
+      if (e.elements.some((x) => ts.isSpreadElement(x) || ts.isOmittedExpression(x))) return this.fail(e, "spreads and holes in array literals are not supported in the logic");
+      return `#[${e.elements.map((x) => this.expr(x, "value", scope, deps)).join(", ")}]`;
+    }
     if (ts.isArrowFunction(e)) return this.fail(e, "functions as values are not supported here yet");
     return this.fail(e, `unsupported expression`);
   }
@@ -1387,6 +1631,7 @@ export class Translator {
     }
     const body = `${l} ${op} ${r}`;
     if (guards.length === 0) return `(${body})`;
+    this.#guardCount += guards.length;
     if (this.#guards !== undefined) {
       this.#guards.push(...guards);
       return `(${body})`;
@@ -1621,7 +1866,7 @@ export class Translator {
             const ik = this.kindOf(i, scope);
             if (ik !== "nat" && ik !== "literal") return this.fail(i, "the index must be `nat`");
             // In bounds (proved), JavaScript returns the UTF-16 code unit; out of bounds it returns NaN.
-            r = `(${str}[${this.expr(i, "value", scope, deps)}]).toNat`;
+            r = `(${str}[${this.expr(i, "value", scope, deps)}]'${IDX_PROOF}).toNat`;
             break;
           }
           default:
@@ -1661,13 +1906,20 @@ export class Translator {
       }
     }
     if (!ts.isIdentifier(e.expression)) return this.fail(e.expression, "only calls to named functions are supported in the logic yet");
+    if (this.modifyingCallee(e) !== undefined) return this.fail(e, "a call that modifies its arguments must be a statement of its own");
+    return this.coerceProp(e, this.callText(e, scope, deps), mode);
+  }
+
+  /** `f(a, b)` as a Lean application (no checks about modification). */
+  callText(e: ts.CallExpression, scope: Scope, deps: Set<string>): string {
+    const args = e.arguments;
+    if (!ts.isIdentifier(e.expression)) return this.fail(e.expression, "only calls to named functions are supported in the logic yet");
     const decl = this.declOf(e.expression);
     if (decl === undefined || fnLike(decl) === undefined) return this.fail(e.expression, "only calls to functions declared in your project are supported in the logic yet");
     if (!this.isUserDecl(decl)) return this.fail(e.expression, "this function is not part of the logic (only functions in your project can be reflected)");
     const ln = this.requireDecl(decl);
     deps.add(ln);
-    const r = `(${ln}${args.map((a) => ` ${this.expr(a, "value", scope, deps)}`).join("")})`;
-    return this.coerceProp(e, r, mode);
+    return `(${ln}${args.map((a) => ` ${this.expr(a, "value", scope, deps)}`).join("")})`;
   }
 
   // ---- Theorems --------------------------------------------------------------------------------
@@ -1875,6 +2127,23 @@ export class Translator {
 function b0IsType(name: string, binders: readonly string[]): boolean {
   return binders.some((b) => b.startsWith(`{${name} :`));
 }
+
+function isMutableType(leanType: string): boolean {
+  return leanType.startsWith("(Array ") || leanType.startsWith("PS.");
+}
+
+function isExported(n: ts.Node): boolean {
+  const target = ts.isVariableDeclaration(n) ? n.parent.parent : n;
+  return ts.canHaveModifiers(target) && (ts.getModifiers(target)?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword) ?? false);
+}
+
+/** Component `j` of `n` modified-argument states in `(result, a₀, …, aₙ₋₁)`. */
+function stateProj(j: number, n: number): string {
+  return ".2" + ".2".repeat(j) + (j < n - 1 ? ".1" : "");
+}
+
+/** Proof that an index is in bounds: Lean's tactic, then simplification that sees through `let`s. */
+const IDX_PROOF = "(by first | get_elem_tactic | (simp_all (config := { zetaDelta := true }) <;> omega))";
 
 /** A JavaScript string literal as its UTF-16 code units. */
 function codeUnits(text: string): string {

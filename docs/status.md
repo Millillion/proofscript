@@ -39,7 +39,7 @@ The kernel (`packages/kernel`) is the only trusted component.
 ## Known gaps
 
 - Overflow bounds that need nonlinear arithmetic (e.g. `n * n` under a bound on `n`) are not proved automatically yet.
-- Mutating arrays or objects, classes, async: not yet in the logic (M5–M6).
+- Shared (aliased) mutable data, classes, async: not yet in the logic. Mutation is supported without aliasing (0.0.3).
 - Preconditions are enforced at calls inside verified code; calls from unverified code are not yet reported (the "boundary preconditions" audit).
 - Proving requires Lean (D30); its replacement by Lean in WebAssembly is planned (D31).
 - Certificate caching (checking without Lean) is not implemented yet; it needs the statement-binding check described in D30's notes.

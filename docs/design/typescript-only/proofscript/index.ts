@@ -43,6 +43,18 @@ export type Length<_N extends number> = unknown;
 /** `pred(x, ...args)` holds, for an ordinary TypeScript predicate function. */
 export type Is<_Pred extends (x: any, ...args: Args) => boolean, Args extends unknown[] = []> = unknown;
 
+/** `pred(...args)` holds (the subject is not passed): for relational postconditions,
+ * e.g. on functions returning `void`. */
+export type Holds<_Pred extends (...args: Args) => boolean, Args extends unknown[] = []> = unknown;
+
+/** In a return type: the function may modify (only) these arguments, e.g.
+ * `void & Modifies<typeof a>`. Everything else is unchanged. */
+export type Modifies<_Arg> = unknown;
+
+/** In a postcondition's arguments: the value of a modified argument before the call
+ * (`typeof a` there means its value after the call). */
+export type Old<Arg> = Arg;
+
 /** In `e satisfies Decreases;` at the top of a function or loop body: a termination measure. */
 export type Decreases = unknown;
 

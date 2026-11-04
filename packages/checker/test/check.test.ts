@@ -120,3 +120,19 @@ test("mixed: a failing theorem does not prevent checking the others", { skip: !h
   assert.equal(by.get("good"), "verified");
   assert.equal(by.get("bad"), "failed");
 });
+
+test("good-mutation: in-place writes, push, mutable fields, Old, modifying calls", { skip: !hasLean }, () => {
+  const r = run("good-mutation");
+  assert.deepEqual(r.diagnostics, []);
+  assert.ok(r.theorems.length >= 4 && r.theorems.every((t) => t.status === "verified"));
+  const swap = r.theorems.find((t) => t.tsName.startsWith("swapAt"))!;
+  assert.ok(swap.assumptions.includes("callers do not alias modified arguments"));
+});
+
+for (const name of ["bad-alias", "bad-undeclared-modify", "bad-old", "bad-write-oob"]) {
+  test(`${name}: rejected`, { skip: !hasLean }, () => {
+    const r = run(name);
+    assert.ok(r.diagnostics.length > 0, "a diagnostic is reported");
+    assert.ok(r.theorems.every((t) => t.status !== "verified"));
+  });
+}

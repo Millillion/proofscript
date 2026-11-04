@@ -43,7 +43,9 @@ export function checkProject(project: Project, workDir: string): CheckResult {
   const theorems = decls.filter((d) => d.kind === "theorem");
   const pos = (d: GeneratedDecl) => tr.diag(d.node, "");
   // Declarations that could not be translated are reported; everything else is still checked.
-  if (theorems.length === 0) return { diagnostics, unverified, theorems: [], declarationsChecked: 0 };
+  // Definitions carry obligations of their own (bounds, preconditions, overflow), so they are
+  // checked even when there are no theorems.
+  if (decls.length === 0) return { diagnostics, unverified, theorems: [], declarationsChecked: 0 };
 
   // 1. Prove with Lean (untrusted).
   let build = buildLean(workDir, decls);
@@ -74,7 +76,7 @@ export function checkProject(project: Project, workDir: string): CheckResult {
     for (const d of dead) failed.add(d);
     const alive = decls.filter((d) => !dead.has(d));
     const failedResults = theorems.filter((t) => dead.has(t)).map((t) => ({ ...base(t, pos), status: "failed" as const, axioms: [], reflected: [], assumptions: [] }));
-    if (!alive.some((d) => d.kind === "theorem")) return { diagnostics, unverified, theorems: failedResults, declarationsChecked: 0 };
+    if (alive.length === 0) return { diagnostics, unverified, theorems: failedResults, declarationsChecked: 0 };
     build = buildLean(workDir, alive);
     if (!build.ok) {
       diagnostics.push({ file: "", line: 0, column: 0, message: "Lean failed on declarations that did not fail on their own; nothing could be checked" });
@@ -83,7 +85,8 @@ export function checkProject(project: Project, workDir: string): CheckResult {
   }
 
   // 2. Export the proofs and check them with ProofScript's kernel (trusted).
-  const text = exportDecls(workDir, theorems.filter((t) => !failed.has(t)).map((t) => t.leanName));
+  // Every surviving definition and theorem goes through the kernel.
+  const text = exportDecls(workDir, decls.filter((d) => !failed.has(d)).map((d) => d.leanName));
   const kernel = new Kernel();
   let count = 0;
   try {

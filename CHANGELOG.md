@@ -2,6 +2,15 @@
 
 ProofScript ships patch releases (0.0.x) until the 0.1.0 MVP. See [docs/v0.1.md](docs/v0.1.md).
 
+## 0.0.3 (2026-11-04)
+
+- **Mutation (D21):** arrays and plain objects can be changed in verified code: `a[i] = v` (index proved in bounds; JavaScript would otherwise grow the array with holes), `a.push(v)` (new length proved below 2³², where JavaScript throws), `p.f = v` on objects with mutable fields, and local arrays built from literals.
+- **Frames:** `Modifies<typeof a>` in a return type declares which arguments a function may change; changing any other parameter is an error. Postconditions see the new value as `typeof a` and the value on entry as `Old<typeof a>`. New `Holds<typeof pred, […]>` states relational postconditions (e.g. for `void` functions). Works through loops.
+- **Translation:** a modifying function returns its result together with the new values of its modified arguments; calls are statements that rebind the caller's variables (as Aeneas does for Rust).
+- **No aliasing (enforced):** no copying array/object references (`const b = a`), no returning an array parameter, no passing the same array twice to a function that modifies one of them. Exported modifying functions list the assumption "callers do not alias modified arguments".
+- Definitions are checked (and kernel-checked) even when a project has no theorems. Non-recursive predicates are simp lemmas, so callers' preconditions can use them. "Array length < 2³²" facts are attached only where overflow checks need them.
+- Fixtures: `good-mutation`, `bad-alias`, `bad-undeclared-modify`, `bad-old`, `bad-write-oob`. 34/34 tests pass.
+
 ## 0.0.2 (2026-11-04)
 
 - **Structures:** plain object types (`type Point = { readonly x: nat; readonly y: nat }`) and interfaces are data types in the logic: field access, object literals (including shorthand properties), structural equality with `eq`.
