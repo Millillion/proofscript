@@ -19,17 +19,17 @@ When a decision changes, update its entry and note the date rather than deleting
   - *Lean 4 as the checker from day one* (translate to Lean, run Lean). Faster start and a battle-tested kernel, but a heavy native dependency, a slower editor loop, no in-browser checking, and ProofScript's correctness bound to a translation into a different surface language.
   - *A different logic* (refinement types + SMT only, like Liquid Haskell; or a custom type theory). Rejected: weaker, or no existing independent checkers and metatheory.
 
-### D2. Logic — **Default**
+### D2. Logic — **Decided** (2026-11-04)
 - **Chosen:** exactly Lean 4's type theory (dependent functions, universes, inductive families, impredicative proof-irrelevant `Prop`, quotients, `propext`), with classical choice allowed only in erased positions.
 - **Alternatives:** predicative Martin-Löf type theory (no impredicative `Prop`); an extensional type theory; adding SProp. All lose Lean compatibility.
 
-### D3. Trust of automation (SMT, decision procedures) — **Default**
+### D3. Trust of automation (SMT, decision procedures) — **Decided** (2026-11-04)
 - **Chosen:** all automation is untrusted and must produce kernel-checkable proofs. Where reconstruction doesn't exist yet, an SMT result may be accepted but is recorded in the trust footprint as `smt` (forbidden at assurance level 3+).
 - **Alternatives:**
   - *Trust SMT* (Dafny, Verus): fast to build, but a permanent soundness hole that is hard to remove later.
   - *No SMT at all*: purely kernel tactics, slower to reach good automation.
 
-### D4. Build order: kernel first — **Default**
+### D4. Build order: kernel first — **Decided** (2026-11-04)
 - **Chosen:** kernel and theorem proving first; contracts on ordinary code are built on top.
 - **Alternative:** Dafny-style contract checker with trusted Z3 first, kernel later (research/04's proposal). Faster first demo, but every feature is built on a path that must be replaced.
 
@@ -112,59 +112,59 @@ When a decision changes, update its entry and note the date rather than deleting
 
 ## Semantics
 
-### D17. Numbers — **Default**
+### D17. Numbers — **Decided** (2026-11-04)
 - **Chosen:** semantics directed by static type. `number` is IEEE-754 binary64 exactly as JS; `int`/`nat` are proved safe-integer refinements whose spec arithmetic is exact and whose runtime arithmetic carries no-overflow obligations; `bigint` is exact integers.
 - **Alternatives:**
   - *Treat `number` as ℝ or ℤ* (most JS verification prototypes): unsound for real programs.
   - *Only floats*: honest, but integer reasoning becomes painful.
 
-### D18. Equality — **Default**
+### D18. Equality — **Decided** (2026-11-04)
 - **Chosen:** `===` always means JavaScript's `===`; propositional equality is `eq(a, b)`; on `int`/`nat`/`bigint`/`boolean`/`string` the two are proved equivalent.
 - **Alternative:** give `===` structural meaning in specs. Rejected because spec and runtime meaning would diverge (a top pitfall in prior art).
 
-### D19. Exceptions — **Default**
+### D19. Exceptions — **Decided** (2026-11-04)
 - **Chosen:** by default a function may throw; postconditions describe normal returns. A `Throws<…>` refinement (or `Throws<never>`) can be added. Reflected (spec-usable) functions must not throw.
 - **Alternative:** require proving no exceptions by default (stricter; hurts adoption).
 
-### D20. Termination — **Default**
+### D20. Termination — **Decided** (2026-11-04)
 - **Chosen:** reflected functions and theorems must terminate (structural recursion detected automatically; otherwise `e satisfies Decreases`). Other verified functions prove termination by default, with an opt-out to partial correctness.
 - **Alternative:** partial correctness by default. Easier, but then nothing guarantees anything returns.
 
-### D21. Mutation and the heap — **Default**
+### D21. Mutation and the heap — **Decided** (2026-11-04)
 - **Chosen:** Dafny-style dynamic frames expressed as types: `Reads<typeof a>`, `Modifies<typeof b>` intersected into the return type, and `Old<typeof x>` in postcondition predicates, over a separation-logic model proved sound against the JS semantics.
 - **Alternatives:**
   - *Ownership/permissions* (Verus, Prusti): more automation, but TS has no ownership types to build on.
   - *Exposing separation logic directly*: most powerful, steep for users.
   - *Immutable data only*: simplest, too restrictive for real TS.
 
-### D22. Values from unverified code — **Default**
+### D22. Values from unverified code — **Decided** (2026-11-04)
 - **Chosen:** opaque to proofs (kernel type `JSVal`) whatever their TS type says. Knowledge comes only from verified validators, user-written runtime checks (narrowing), or tracked `assume` specs.
 - **Alternative:** trust TS types at boundaries. Unsound, since `any`, `as` and `.d.ts` files can lie.
 
-### D23. Type classes — **Open**
+### D23. Type classes — **Postponed** (2026-11-04) until a real example needs them
 - Lean relies on type classes (`Decidable`, `Add`, `Ord`, …). Options:
   - ghost instances resolved by the elaborator;
   - TypeScript interfaces passed as dictionaries;
   - no type classes, with ad-hoc built-ins for numbers and strings.
 - To decide before the elaborator handles user-defined algebraic structures.
 
-### D24. Assurance levels — **Default**
+### D24. Assurance levels — **Decided** (2026-11-04)
 - **Chosen:** five levels (0 script, 1 contracts, 2 sound, 3 audited, 4 complete), configured in `tsconfig.json` ([02 §9](02-language-design.md#9-assurance-levels-and-adoption)).
 - **Alternative:** a single strict mode plus per-file opt-out (simpler, but loses SPARK-style graduated adoption).
 
 ## Implementation
 
-### D25. Implementation language — **Default**
+### D25. Implementation language — **Decided** (2026-11-04)
 - **Chosen:** TypeScript for the kernel, elaborator and tooling. It runs in Node and the browser, and the kernel can eventually be verified in ProofScript itself.
 - **Alternatives:** Rust (speed, wasm; possible later for the kernel only), Go (aligned with the TS 7 compiler), Lean (re-use Lean's kernel directly; see D1).
 
-### D26. Front end — **Default**
+### D26. Front end — **Decided** (2026-11-04)
 - **Chosen:** the TypeScript compiler's JavaScript API (6.x) for parsing, name resolution and `tsc`'s types; all of it untrusted.
 - **Alternatives:** our own parser (more work, no benefit under D5); the TS 7 native API once 7.1 is stable (faster; a later migration).
 
 ## Licensing
 
-### D27. Using Lean's work — **Default**
+### D27. Using Lean's work — **Decided** (2026-11-04): keep MIT for now
 - Lean 4, Mathlib, lean4export, lean4lean and nanoda are all **Apache-2.0**. Re-implementing Lean's type theory, tactic names, algorithms and export format in our own code is permitted. Ideas, designs and names of tactics are not something the license restricts.
 - If we **copy or translate Lean source code** (e.g. port an algorithm line by line, or vendor Lean files), those parts must keep Apache-2.0 terms: include the license text, keep copyright notices and any NOTICE file, and mark our modifications. Apache-2.0 code can be combined with this repository's MIT license.
 - **Trademark:** "Lean" is a trademark of the Lean FRO. Descriptive use ("Lean-compatible kernel", "exports proofs that Lean re-checks") is fine. Anything implying ProofScript is official, affiliated or endorsed is not, without permission.
@@ -198,3 +198,9 @@ When a decision changes, update its entry and note the date rather than deleting
 - **Engineering rule now:** the Lean boundary in `packages/checker/src/lean.ts` stays narrow (Lean source in; exported proofs and messages out), so the engine is a drop-in replacement.
 - **Version alignment:** Lasm supports exactly Lean 4.35.0; ProofScript pins 4.34.1 (the Lean Kernel Arena's version). Move to a shared version.
 - **Alternatives:** a full TypeScript elaborator and tactic suite (D25's original plan); keeping the native Lean dependency permanently.
+
+### D32. Integer overflow in running code — **Decided** (2026-11-04)
+- **Chosen:** every runtime `+`, `-`, `*` on `nat`/`int` in reflected code carries a no-overflow obligation (the exact result stays within ±(2⁵³ − 1)), discharged automatically where possible. One stated environment assumption, listed in trust footprints: no data structure has 2⁵³ or more elements. Arithmetic in specs and theorems stays exact.
+- **Alternatives:** obligations with no size assumption (stricter; even counting a list's elements cannot be proved safe); keep trusting exactness (unsound for large values).
+
+Group C (D6–D16, surface syntax) stays **Default** until the syntax review at the end of M3 (D29).
