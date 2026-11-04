@@ -136,3 +136,15 @@ for (const name of ["bad-alias", "bad-undeclared-modify", "bad-old", "bad-write-
     assert.ok(r.theorems.every((t) => t.status !== "verified"));
   });
 }
+
+test("good-indexed: value-indexed types (Vec, Fin, typeof n), value parameters, modular postconditions", { skip: !hasLean }, () => {
+  const r = run("good-indexed");
+  assert.deepEqual(r.diagnostics, []);
+  assert.ok(r.theorems.length >= 6 && r.theorems.every((t) => t.status === "verified"));
+});
+
+test("bad-indexed: an out-of-range Fin index is rejected", { skip: !hasLean }, () => {
+  const r = run("bad-indexed");
+  assert.ok(r.diagnostics.some((d) => /precondition/.test(d.message)));
+  assert.ok(r.theorems.every((t) => t.status !== "verified"));
+});

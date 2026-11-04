@@ -134,13 +134,21 @@ export class Translator {
   /** Type-parameter binders of the function being translated (loop helpers repeat them). */
   #currentTypeBinders: string[] = [];
   /** Loop helpers generated for each function (innermost first), for postcondition proofs. */
-  readonly #loops = new Map<string, { name: string; args: string[]; binders: string[]; scope: Scope; node: ts.Node }[]>();
+  readonly #loops = new Map<string, { name: string; args: string[]; binders: string[]; scope: Scope; node: ts.Node; tp: Map<ts.Symbol, string> }[]>();
+
+  /** Type of the current-function record (for helper signatures). */
+  get currentFunctionInfo() {
+    return this.#currentFunction;
+  }
   /**
    * Side conditions (overflow, subtraction, division guards) collected while
    * translating one statement; emitted as `have` lines before it, so values stay
    * free of proofs. `undefined`: emit inline (inside lambdas).
    */
   #guards: string[] | undefined;
+  #lastDetermined: { vp: ts.Symbol; param: ts.Symbol; field: "size" | "length" }[] = [];
+  /** Scope used to resolve `typeof x` in types. */
+  #valueScope: Scope | undefined;
   /** Number of side-condition guards emitted so far (to decide whether length facts are needed). */
   #guardCount = 0;
   /** Inside a function body (running code): arithmetic must be proved not to overflow (D32). */
@@ -157,7 +165,9 @@ export class Translator {
         leanName: string;
         tsName: string;
         ret: string;
-        preconds: { sym: ts.Symbol; m: ts.TypeNode }[];
+        preconds: { sym: ts.Symbol; type: ts.TypeNode }[];
+        /** Value parameters determined by a parameter's length: `n` is `p.length`. */
+        determined: { vp: ts.Symbol; param: ts.Symbol; field: "size" | "length" }[];
         /** Parameters the function may modify (`Modifies<typeof a>`), in order. */
         mods: ts.Symbol[];
         /** Pseudo-symbols holding each modified parameter's value on entry (for `Old`). */
@@ -166,6 +176,8 @@ export class Translator {
     | undefined;
   /** Old-value pseudo-symbols per function (for loop lemmas). */
   readonly #loopOldKeys = new Map<string, Map<ts.Symbol, ts.Symbol>>();
+  /** Whether the subject of the refinement being translated is a string (`.length`) or an array (`.size`). */
+  #subjectIsString = false;
   /** While generating postconditions: Lean names of parameters' values on entry. */
   #postOld: Map<ts.Symbol, string> | undefined;
   #fresh = 0;
@@ -181,13 +193,13 @@ export class Translator {
   translateFiles(files: readonly ts.SourceFile[]): Translation {
     for (const sf of files) {
       for (const st of sf.statements) {
-        if (ts.isFunctionDeclaration(st) && st.name !== undefined && (this.isTheorem(st) || this.hasSpec(st.type))) {
+        if (ts.isFunctionDeclaration(st) && st.name !== undefined && (this.isTheorem(st) || this.hasSpec(st.type) || this.hasPreconditions(st.parameters))) {
           this.#guard(() => this.requireDecl(st));
         }
         if (ts.isVariableStatement(st)) {
           for (const d of st.declarationList.declarations) {
             const fl = fnLike(d);
-            if (fl !== undefined && this.hasSpec(fl.type)) this.#guard(() => this.requireDecl(d));
+            if (fl !== undefined && (this.hasSpec(fl.type) || this.hasPreconditions(fl.parameters))) this.#guard(() => this.requireDecl(d));
           }
         }
       }
@@ -222,6 +234,24 @@ export class Translator {
   ordered(): GeneratedDecl[] {
     const all = [...this.decls.values()];
     const byName = new Map(all.map((d) => [d.leanName, d]));
+    // Modular verification: a caller's checks may use its callees' proved postconditions,
+    // so those lemmas must come before the caller.
+    const posts = new Map<string, string[]>();
+    for (const d of all) {
+      const m = /^(.*)\.post_\d+$/.exec(d.leanName);
+      if (m !== null && d.kind === "theorem") posts.set(m[1]!, [...(posts.get(m[1]!) ?? []), d.leanName]);
+    }
+    const extDeps = (d: GeneratedDecl): Set<string> => {
+      const out = new Set(d.deps);
+      for (const dep of d.deps) {
+        if (byName.get(dep)?.kind !== "def") continue;
+        for (const p of posts.get(dep) ?? []) {
+          // Never a lemma about d itself (or one that depends on d): that would be circular.
+          if (!p.startsWith(`${d.leanName}.`) && !byName.get(p)?.deps.has(d.leanName)) out.add(p);
+        }
+      }
+      return out;
+    };
     const out: GeneratedDecl[] = [];
     const state = new Map<string, "visiting" | "done">();
     const visit = (d: GeneratedDecl): void => {
@@ -229,7 +259,7 @@ export class Translator {
       if (s === "done") return;
       if (s === "visiting") return; // self-recursion; mutual recursion is rejected at translation
       state.set(d.leanName, "visiting");
-      for (const dep of d.deps) {
+      for (const dep of extDeps(d)) {
         const t = byName.get(dep);
         if (t !== undefined && t !== d) visit(t);
       }
@@ -259,11 +289,12 @@ export class Translator {
 
   /** A function with a refined return type (a postcondition) must be verified. */
   hasSpec(t: ts.TypeNode | undefined): boolean {
-    return (
-      t !== undefined &&
-      ts.isIntersectionTypeNode(t) &&
-      t.types.some((m) => ts.isTypeReferenceNode(m) && ["Lt", "Le", "Gt", "Ge", "Is", "Holds", "Modifies"].includes(this.ps(m.typeName) ?? ""))
-    );
+    return this.hasRefinement(t, ["Lt", "Le", "Gt", "Ge", "Length", "Is", "Holds", "Modifies"]);
+  }
+
+  /** Refined parameters are preconditions: such a function is verified code too. */
+  hasPreconditions(ps: ts.NodeArray<ts.ParameterDeclaration>): boolean {
+    return ps.some((p) => this.hasRefinement(p.type, ["Lt", "Le", "Gt", "Ge", "Length", "Is"]));
   }
 
   singleReturn(fn: ts.FunctionDeclaration): ts.Expression | undefined {
@@ -406,6 +437,11 @@ export class Translator {
       if (sym !== undefined && typeParams.has(sym)) return typeParams.get(sym)!;
       if (sym !== undefined && this.#currentTypeParams.has(sym)) return this.#currentTypeParams.get(sym)!;
       const decl = this.declOf(t.typeName);
+      if (this.isRefinementAlias(decl)) {
+        // `Vec<T, n>`: the alias's carrier, with its parameters substituted (refinements are
+        // handled where the type is used: preconditions, postconditions, hypotheses).
+        return this.type(decl.type, deps, this.aliasParams(t, decl, deps, typeParams), verifiedRefinements);
+      }
       if (decl !== undefined && (ts.isTypeAliasDeclaration(decl) || ts.isInterfaceDeclaration(decl))) {
         const ln = this.requireDecl(decl);
         deps.add(ln);
@@ -423,9 +459,10 @@ export class Translator {
       }
       return this.type(carrier[0]!, deps, typeParams);
     }
-    if (ts.isTypeQueryNode(t)) {
-      // `typeof x` in an index position: the value x itself.
-      return this.fail(t, "`typeof x` value indices are not supported by the Lean engine yet");
+    if (ts.isTypeQueryNode(t)) return this.typeQueryValue(t);
+    if (ts.isTupleTypeNode(t)) {
+      if (t.elements.length < 2) return this.fail(t, "tuples need at least two elements in the logic");
+      return `(${t.elements.map((x) => this.type(x as ts.TypeNode, deps, typeParams)).join(" × ")})`;
     }
     if (ts.isTypeOperatorNode(t) && t.operator === ts.SyntaxKind.ReadonlyKeyword && ts.isArrayTypeNode(t.type)) {
       return `(Array ${this.type(t.type.elementType, deps, typeParams)})`;
@@ -434,15 +471,67 @@ export class Translator {
     return this.fail(t, `unsupported type ${t.getText()}`);
   }
 
+  /**
+   * For each value parameter `n extends nat`, the first parameter `p` with a `Length<n>`
+   * refinement (possibly through an alias like `Vec<T, n>`): `n` is `p.length`.
+   */
+  determinedValueParams(fn: FnLike, deps: Set<string>): Map<ts.Symbol, string> {
+    const out = new Map<ts.Symbol, string>();
+    this.#lastDetermined = [];
+    const sentinel = new Map<ts.Symbol, string>();
+    let anyValue = false;
+    for (const tp of fn.typeParameters ?? []) {
+      const sym = this.checker.getSymbolAtLocation(tp.name);
+      if (sym === undefined) continue;
+      if (tp.constraint !== undefined) {
+        sentinel.set(sym, `__vp_${tp.name.text}`);
+        anyValue = true;
+      } else {
+        sentinel.set(sym, this.ident(tp.name.text));
+      }
+    }
+    if (!anyValue) return out;
+    for (const p of fn.parameters) {
+      if (!ts.isIdentifier(p.name)) continue;
+      const pname = this.ident(p.name.text);
+      const isStr = p.type !== undefined && this.isStringTypeNode(p.type);
+      let refs: { m: ts.TypeReferenceNode; tp: Map<ts.Symbol, string> }[] = [];
+      try {
+        refs = this.refinementsOf(p.type, deps, sentinel);
+      } catch {
+        continue;
+      }
+      for (const { m, tp } of refs) {
+        if (this.ps(m.typeName) !== "Length") continue;
+        const a = m.typeArguments?.[0];
+        if (a === undefined || !ts.isTypeReferenceNode(a)) continue;
+        const v = tp.get(this.checker.getSymbolAtLocation(a.typeName)!);
+        if (v === undefined || !v.startsWith("__vp_")) continue;
+        for (const [sym, sv] of sentinel) {
+          if (sv === v && !out.has(sym)) {
+            out.set(sym, `(${pname}).${isStr ? "length" : "size"}`);
+            this.#lastDetermined.push({ vp: sym, param: this.checker.getSymbolAtLocation(p.name)!, field: isStr ? "length" : "size" });
+          }
+        }
+      }
+    }
+    return out;
+  }
+
   typeParamBinders(
     tps: ts.NodeArray<ts.TypeParameterDeclaration> | undefined,
     deps: Set<string>,
     typeParams: Map<ts.Symbol, string>,
+    determined: Map<ts.Symbol, string> = new Map(),
   ): string[] {
     const out: string[] = [];
     for (const tp of tps ?? []) {
       const sym = this.checker.getSymbolAtLocation(tp.name);
       const n = this.ident(tp.name.text);
+      if (sym !== undefined && determined.has(sym)) {
+        typeParams.set(sym, determined.get(sym)!);
+        continue;
+      }
       if (sym !== undefined) typeParams.set(sym, n);
       if (tp.constraint !== undefined) {
         // `n extends nat`: a ghost value parameter.
@@ -452,6 +541,75 @@ export class Translator {
       }
     }
     return out;
+  }
+
+  // ---- Refinement aliases and value indices ------------------------------------------------------
+
+  /** An alias whose body refines a carrier (`readonly T[] & Length<n>`), as opposed to a data type. */
+  isRefinementAlias(decl: ts.Declaration | undefined): decl is ts.TypeAliasDeclaration {
+    if (decl === undefined || !ts.isTypeAliasDeclaration(decl)) return false;
+    const b = decl.type;
+    return ts.isIntersectionTypeNode(b) || ts.isArrayTypeNode(b) || ts.isTypeOperatorNode(b) || ts.isTupleTypeNode(b) ||
+      (ts.isTypeReferenceNode(b) && (this.ps(b.typeName) !== undefined || this.isRefinementAlias(this.declOf(b.typeName))));
+  }
+
+  /** The Lean value of a type argument in an index position: `typeof x`, a literal, a value parameter, `Plus<…>`. */
+  typeArgValue(arg: ts.TypeNode, deps: Set<string>, typeParams: Map<ts.Symbol, string>): string {
+    if (ts.isTypeQueryNode(arg)) return this.typeQueryValue(arg);
+    return this.type(arg, deps, typeParams);
+  }
+
+  typeQueryValue(q: ts.TypeQueryNode): string {
+    const scope = this.#valueScope;
+    if (scope === undefined) return this.fail(q, "`typeof x` in a type is only supported in function signatures and bodies");
+    if (ts.isIdentifier(q.exprName)) return this.local(q.exprName, scope);
+    if (ts.isQualifiedName(q.exprName) && q.exprName.right.text === "length" && ts.isIdentifier(q.exprName.left)) {
+      const sym = this.checker.getSymbolAtLocation(q.exprName.left);
+      const isStr = sym?.valueDeclaration !== undefined && (this.checker.getTypeOfSymbol(sym).flags & ts.TypeFlags.StringLike) !== 0;
+      return `(${this.local(q.exprName.left, scope)}).${isStr ? "length" : "size"}`;
+    }
+    return this.fail(q, "unsupported `typeof` in a type");
+  }
+
+  /** Substitution for a refinement alias's parameters, from a reference's type arguments. */
+  aliasParams(ref: ts.TypeReferenceNode, decl: ts.TypeAliasDeclaration, deps: Set<string>, typeParams: Map<ts.Symbol, string>): Map<ts.Symbol, string> {
+    const inner = new Map(typeParams);
+    (decl.typeParameters ?? []).forEach((tp, k) => {
+      const sym = this.checker.getSymbolAtLocation(tp.name);
+      const arg = ref.typeArguments?.[k];
+      if (sym === undefined) return;
+      if (arg === undefined) this.fail(ref, `missing type argument for ${tp.name.text}`);
+      inner.set(sym, this.typeArgValue(arg!, deps, typeParams));
+    });
+    return inner;
+  }
+
+  /** The refinements a type asserts, expanding refinement aliases, each with its substitution. */
+  refinementsOf(t: ts.TypeNode | undefined, deps: Set<string>, typeParams: Map<ts.Symbol, string>): { m: ts.TypeReferenceNode; tp: Map<ts.Symbol, string> }[] {
+    if (t === undefined) return [];
+    if (ts.isParenthesizedTypeNode(t)) return this.refinementsOf(t.type, deps, typeParams);
+    if (ts.isIntersectionTypeNode(t)) return t.types.flatMap((x) => this.refinementsOf(x, deps, typeParams));
+    if (ts.isTypeReferenceNode(t)) {
+      const ps = this.ps(t.typeName);
+      if (ps !== undefined) return REFINEMENTS.has(ps) && ps !== "Simp" && ps !== "Modifies" ? [{ m: t, tp: typeParams }] : [];
+      const decl = this.declOf(t.typeName);
+      if (this.isRefinementAlias(decl)) return this.refinementsOf(decl.type, deps, this.aliasParams(t, decl, deps, typeParams));
+    }
+    return [];
+  }
+
+  /** Whether a type (after expanding aliases) carries any refinement: syntactic, no translation. */
+  hasRefinement(t: ts.TypeNode | undefined, names: readonly string[]): boolean {
+    if (t === undefined) return false;
+    if (ts.isParenthesizedTypeNode(t)) return this.hasRefinement(t.type, names);
+    if (ts.isIntersectionTypeNode(t)) return t.types.some((x) => this.hasRefinement(x, names));
+    if (ts.isTypeReferenceNode(t)) {
+      const ps = this.ps(t.typeName);
+      if (ps !== undefined) return names.includes(ps);
+      const decl = this.declOf(t.typeName);
+      if (this.isRefinementAlias(decl)) return this.hasRefinement(decl.type, names);
+    }
+    return false;
   }
 
   // ---- Inductive types: discriminated unions ------------------------------------------------
@@ -609,10 +767,14 @@ export class Translator {
     const deps = new Set<string>();
     const scope: Scope = { locals: new Map(), narrowed: new Map() };
     const typeParams = new Map<ts.Symbol, string>();
-    const binders = this.typeParamBinders(fn.typeParameters, deps, typeParams);
+    // Value parameters (`n extends nat`) pinned down by a `Length<n>` refinement of a
+    // parameter are that parameter's length: callers never supply them.
+    const determined = this.determinedValueParams(fn, deps);
+    const binders = this.typeParamBinders(fn.typeParameters, deps, typeParams, determined);
+    this.#valueScope = scope;
     const typeBinders = [...binders];
     const hypBinders: string[] = [];
-    const preconds: { sym: ts.Symbol; m: ts.TypeNode }[] = [];
+    const preconds: { sym: ts.Symbol; type: ts.TypeNode }[] = [];
     const types = new Map<ts.Symbol, string>();
     (scope as { types?: Map<ts.Symbol, string> }).types = types;
     fn.parameters.forEach((p, i) => {
@@ -629,9 +791,7 @@ export class Translator {
       binders.push(`(${n} : ${ty})`);
       hypBinders.push(...arraySizeBinder(n, ty));
       hypBinders.push(...this.preconditionBinders(p, n, i, scope, deps, typeParams));
-      if (p.type !== undefined && ts.isIntersectionTypeNode(p.type) && sym !== undefined) {
-        for (const m of p.type.types) preconds.push({ sym, m });
-      }
+      if (p.type !== undefined && sym !== undefined && this.refinementsOf(p.type, new Set(), typeParams).length > 0) preconds.push({ sym, type: p.type });
       return undefined;
     });
     // Proof arguments come after all value parameters, so calls stay positional.
@@ -652,7 +812,7 @@ export class Translator {
       types.set(k, types.get(m)!);
     }
     const saved = [this.#currentFunction, this.#currentTypeParams, this.#currentTypeBinders, this.#runtime, this.#assumptions] as const;
-    this.#currentFunction = { leanName, tsName: fn.name.text, ret, preconds, mods, oldKeys };
+    this.#currentFunction = { leanName, tsName: fn.name.text, ret, preconds, mods, oldKeys, determined: this.#lastDetermined };
     this.#loopOldKeys.set(leanName, oldKeys);
     this.#currentTypeParams = typeParams;
     this.#currentTypeBinders = typeBinders;
@@ -702,14 +862,15 @@ export class Translator {
    * context (including the conditions of enclosing `if`s).
    */
   preconditionBinders(p: ts.ParameterDeclaration, n: string, i: number, scope: Scope, deps: Set<string>, typeParams: Map<ts.Symbol, string>): string[] {
-    if (p.type === undefined || !ts.isIntersectionTypeNode(p.type)) return [];
     const out: string[] = [];
-    p.type.types.forEach((m, k) => {
+    this.#subjectIsString = p.type !== undefined && this.isStringTypeNode(p.type);
+    this.refinementsOf(p.type, deps, typeParams).forEach(({ m, tp }, k) => {
       const pd = new Set<string>();
-      const prop = this.refinementProp(m, n, scope, pd, typeParams);
+      const prop = this.refinementProp(m, n, scope, pd, tp);
       for (const d of pd) deps.add(d);
       if (prop !== undefined) out.push(`(pre_${i}_${k} : ${prop} := ${this.auto(pd)})`);
     });
+    this.#subjectIsString = false;
     return out;
   }
 
@@ -746,6 +907,8 @@ export class Translator {
         return `${subject} > ${value(args[0]!)}`;
       case "Ge":
         return `${subject} ≥ ${value(args[0]!)}`;
+      case "Length":
+        return `(${subject}).${this.#subjectIsString ? "length" : "size"} = ${value(args[0]!)}`;
       case "Is": {
         const pred = args[0];
         if (pred === undefined || !ts.isTypeQueryNode(pred) || !ts.isIdentifier(pred.exprName)) return this.fail(m, "`Is` takes `typeof predicate`");
@@ -781,7 +944,10 @@ export class Translator {
     recursive: boolean,
   ): void {
     const rt = fn.type;
-    if (rt === undefined || !ts.isIntersectionTypeNode(rt)) return;
+    if (rt === undefined) return;
+    this.#valueScope = scope;
+    const refs = this.refinementsOf(rt, new Set(), typeParams);
+    if (refs.length === 0) return;
     const args = fn.parameters.map((p) => this.local(p.name as ts.Identifier, scope));
     const call = `(${def.leanName}${args.map((a) => ` ${a}`).join("")})`;
     const allArgs = binders.map((b) => /^[({]([^ ]+) :/.exec(b)?.[1]).filter((x): x is string => x !== undefined && !b0IsType(x, binders));
@@ -797,7 +963,9 @@ export class Translator {
       this.#postOld = new Map(mods.map((m) => [m, old(m)]));
       return { subject: `${callExpr}.1`, sc: { ...base, locals } };
     };
-    rt.types.forEach((m, i) => {
+    refs.forEach(({ m, tp }, i) => {
+      typeParams = tp;
+      this.#subjectIsString = this.isStringTypeNode(rt);
       this.#guard(() => {
         this.#postOld = undefined;
         const deps = new Set<string>([def.leanName]);
@@ -813,7 +981,11 @@ export class Translator {
           const lcall = `(${l.name}${l.args.filter((a) => !/^(inv_|fpre_|size_)/.test(a)).map((a) => ` ${a}`).join("")})`;
           const oldKeys = this.#loopOldKeys.get(def.leanName);
           const lv = view(lcall, l.scope, (sym) => l.scope.locals.get(oldKeys?.get(sym) ?? sym)!);
-          const lprop = this.refinementProp(m, lv.subject, lv.sc, ldeps, typeParams);
+          this.#valueScope = l.scope;
+          const lref = this.refinementsOf(rt, new Set(), l.tp)[i];
+          this.#valueScope = scope;
+          if (lref === undefined) continue;
+          const lprop = this.refinementProp(lref.m, lv.subject, lv.sc, ldeps, lref.tp);
           if (lprop === undefined) continue;
           const unfold = this.#defClosure(ldeps, l.name).filter((d) => !loopNames.has(d));
           const lname = `${l.name}.post_${i}`;
@@ -826,9 +998,9 @@ export class Translator {
           const lkey = Object.create(null) as ts.Node;
           this.decls.set(lkey, {
             kind: "theorem",
-            tsName: `${def.tsName} (postcondition \`${m.getText()}\` at a loop)`,
+            tsName: `${def.tsName} (postcondition \`${(m.pos >= rt.pos && m.end <= rt.end ? m : rt).getText()}\` at a loop)`,
             leanName: lname,
-            node: m,
+            node: m.pos >= rt.pos && m.end <= rt.end ? m : rt,
             source: lsource,
             deps: new Set([...ldeps, ...lemmas]),
             obligation: `postcondition of ${def.tsName}, at a loop`,
@@ -845,12 +1017,14 @@ export class Translator {
         }
         const leanName = `${def.leanName}.post_${i}`;
         const source = `@[simp] theorem ${leanName}${binders.map((b) => ` ${b}`).join("")} :\n    ${prop} := by\n  ${tac}`;
-        const key = m as ts.Node;
+        // A fresh key per (function, postcondition): with aliases, `m` is shared between functions.
+        const key = Object.create(null) as ts.Node;
+        const at = m.getSourceFile() === rt.getSourceFile() && m.pos >= rt.pos && m.end <= rt.end ? m : rt;
         this.decls.set(key, {
           kind: "theorem",
-          tsName: `${def.tsName} (postcondition \`${m.getText()}\`)`,
+          tsName: `${def.tsName} (postcondition \`${at.getText()}\`)`,
           leanName,
-          node: m,
+          node: at,
           source,
           deps: new Set([...deps, ...lemmas]),
           obligation: `postcondition of ${def.tsName}`,
@@ -1046,12 +1220,18 @@ export class Translator {
   /** The propositions a `subject satisfies R` asserts (excluding `Decreases`). */
   satisfiesProps(e: ts.SatisfiesExpression, scope: Scope, deps: Set<string>): string[] {
     const subject = this.expr(e.expression, "value", scope, deps);
-    const parts = ts.isIntersectionTypeNode(e.type) ? e.type.types : [e.type];
     const out: string[] = [];
-    for (const m of parts) {
-      if (ts.isTypeReferenceNode(m) && this.ps(m.typeName) === "Decreases") continue;
-      const p = this.refinementProp(m, subject, scope, deps, this.#currentTypeParams);
-      if (p !== undefined) out.push(p);
+    const saved = this.#valueScope;
+    this.#valueScope = scope;
+    this.#subjectIsString = this.isStringExpr(e.expression);
+    try {
+      for (const { m, tp } of this.refinementsOf(e.type, deps, this.#currentTypeParams)) {
+        const p = this.refinementProp(m, subject, scope, deps, tp);
+        if (p !== undefined) out.push(p);
+      }
+    } finally {
+      this.#valueScope = saved;
+      this.#subjectIsString = false;
     }
     return out;
   }
@@ -1261,6 +1441,39 @@ export class Translator {
       types: new Map(params.map((p) => [p.sym, p.ty])),
     };
     const body = blockStatements(bodySt);
+    // Value parameters and `typeof x` are resolved in the helper's scope (its names).
+    const helperTP = new Map(this.#currentTypeParams);
+    for (const d of fn.determined) {
+      const pn = inner.locals.get(d.param);
+      if (pn !== undefined) helperTP.set(d.vp, `(${pn}).${d.field}`);
+    }
+    const savedTP = this.#currentTypeParams;
+    const savedVS = this.#valueScope;
+    this.#currentTypeParams = helperTP;
+    this.#valueScope = inner;
+    try {
+      return this.#loopBody(node, cond, update, bodySt, body, scope, inner, params, deps, after, fn, name, helperTP);
+    } finally {
+      this.#currentTypeParams = savedTP;
+      this.#valueScope = savedVS;
+    }
+  }
+
+  #loopBody(
+    node: ts.Node,
+    cond: ts.Expression,
+    update: ts.Expression | undefined,
+    bodySt: ts.Statement,
+    body: readonly ts.Statement[],
+    scope: Scope,
+    inner: Scope,
+    params: { sym: ts.Symbol; ty: string; name: string }[],
+    deps: Set<string>,
+    after: (s: Scope) => string,
+    fn: NonNullable<Translator["currentFunctionInfo"]>,
+    name: string,
+    helperTP: Map<ts.Symbol, string>,
+  ): string {
     // Leading `satisfies` statements: invariants and the termination measure.
     let j = 0;
     const invariants: { p: string; pd: Set<string> }[] = [];
@@ -1304,13 +1517,18 @@ export class Translator {
     const tps = this.#currentTypeBinders;
     // The enclosing function's preconditions hold throughout its loops.
     const preBinders: string[] = [];
-    fn.preconds.forEach(({ sym, m }, idx) => {
+    let fpre = 0;
+    for (const { sym, type } of fn.preconds) {
       const subject = inner.locals.get(sym);
-      if (subject === undefined) return;
-      const pd = new Set<string>();
-      const prop = this.refinementProp(m, subject, inner, pd, this.#currentTypeParams);
-      if (prop !== undefined) preBinders.push(`(fpre_${idx} : ${prop} := ${this.auto(pd)})`);
-    });
+      if (subject === undefined) continue;
+      this.#subjectIsString = this.isStringTypeNode(type);
+      for (const { m, tp } of this.refinementsOf(type, new Set(), helperTP)) {
+        const pd = new Set<string>();
+        const prop = this.refinementProp(m, subject, inner, pd, tp);
+        if (prop !== undefined) preBinders.push(`(fpre_${fpre++} : ${prop} := ${this.auto(pd)})`);
+      }
+      this.#subjectIsString = false;
+    }
     const sizeBinders = this.#guardCount === loopGuardsBefore ? [] : params.flatMap((p) => arraySizeBinder(p.name, p.ty));
     const binders = [...tps, ...params.map((p) => `(${p.name} : ${p.ty})`), ...sizeBinders, ...preBinders, ...invBinders];
     const term = measure === undefined ? "" : `\ntermination_by ${measure}`;
@@ -1319,6 +1537,7 @@ export class Translator {
     this.decls.set(key, { kind: "def", tsName: `${fn.tsName} (loop)`, leanName: name, node, source, deps: helperDeps, assumptions: [...this.#assumptions] });
     const list = this.#loops.get(fn.leanName) ?? [];
     list.push({
+      tp: helperTP,
       name,
       args: [
         ...params.map((p) => p.name),
@@ -1447,6 +1666,10 @@ export class Translator {
     return shape !== undefined && shape.tagless;
   }
 
+  isStringTypeNode(t: ts.TypeNode): boolean {
+    return (this.checker.getTypeFromTypeNode(t).flags & ts.TypeFlags.StringLike) !== 0;
+  }
+
   isStringExpr(e: ts.Expression): boolean {
     return (this.checker.getTypeAtLocation(e).flags & ts.TypeFlags.StringLike) !== 0;
   }
@@ -1541,6 +1764,8 @@ export class Translator {
     if (ts.isObjectLiteralExpression(e)) return this.objectLiteral(e, scope, deps);
     if (ts.isArrayLiteralExpression(e)) {
       if (e.elements.some((x) => ts.isSpreadElement(x) || ts.isOmittedExpression(x))) return this.fail(e, "spreads and holes in array literals are not supported in the logic");
+      const ctx = this.checker.getContextualType(e);
+      if (ctx !== undefined && this.checker.isTupleType(ctx)) return `(${e.elements.map((x) => this.expr(x, "value", scope, deps)).join(", ")})`;
       return `#[${e.elements.map((x) => this.expr(x, "value", scope, deps)).join(", ")}]`;
     }
     if (ts.isArrowFunction(e)) return this.fail(e, "functions as values are not supported here yet");
@@ -1681,6 +1906,8 @@ export class Translator {
       if (t.kind === ts.SyntaxKind.StringKeyword) return "string";
       if (t.kind === ts.SyntaxKind.BigIntKeyword) return "bigint";
       if (ts.isTypeReferenceNode(t)) {
+        const ad = this.declOf(t.typeName);
+        if (this.isRefinementAlias(ad)) return fromTypeNode(ad.type);
         const n = this.ps(t.typeName);
         if (n === "nat" || n === "Nat") return "nat";
         if (n === "int" || n === "Int") return "int";
@@ -1947,13 +2174,25 @@ export class Translator {
     typeParams: Map<ts.Symbol, string>,
     binders: string[],
   ): GeneratedDecl {
-    for (const p of fn.parameters) {
+    this.#valueScope = scope;
+    const hyps: string[] = [];
+    fn.parameters.forEach((p, i) => {
       if (!ts.isIdentifier(p.name) || p.type === undefined) return this.fail(p, "theorem parameters need a name and a type");
       const n = this.ident(p.name.text);
       const sym = this.checker.getSymbolAtLocation(p.name);
       if (sym !== undefined) scope.locals.set(sym, n);
-      binders.push(`(${n} : ${this.type(p.type, deps, typeParams)})`);
-    }
+      binders.push(`(${n} : ${this.type(p.type, deps, typeParams, true)})`);
+      // A parameter's refinements are hypotheses of the theorem: a theorem about `Vec<A, n>`
+      // is about arrays of length n, not about all arrays.
+      this.#subjectIsString = this.isStringTypeNode(p.type);
+      this.refinementsOf(p.type, deps, typeParams).forEach(({ m, tp }, k) => {
+        const prop = this.refinementProp(m, n, scope, deps, tp);
+        if (prop !== undefined) hyps.push(`(hyp_${i}_${k} : ${prop})`);
+      });
+      this.#subjectIsString = false;
+      return undefined;
+    });
+    binders.push(...hyps);
     const ret = this.singleReturn(fn);
     if (ret === undefined) return this.fail(fn, "a theorem's body must be a single `return` statement");
     let statement: string;

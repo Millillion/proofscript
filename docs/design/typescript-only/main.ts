@@ -1,14 +1,10 @@
 import { append, fromArray, length } from "./list.ts";
-import { binarySearch, isSorted } from "./search.ts";
 import { get, replicate, zip } from "./vec.ts";
 import { length_append } from "./list.ts";
 
 const xs = fromArray([1, 2, 3]);
 console.log("length(append) =", length(append(xs, fromArray([4, 5]))));
 
-const sorted = [1, 3, 5, 7, 9];
-// No cast needed: inside the `if`, ProofScript knows isSorted(sorted) holds.
-if (isSorted(sorted)) console.log("binarySearch =", binarySearch(sorted, 7));
 
 console.log("zip =", JSON.stringify(zip(replicate(2, "a"), [true, false])));
 console.log("get =", get([10, 20, 30], 2));

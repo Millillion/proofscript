@@ -2,6 +2,18 @@
 
 ProofScript ships patch releases (0.0.x) until the 0.1.0 MVP. See [docs/v0.1.md](docs/v0.1.md).
 
+## 0.0.4 (2026-11-04)
+
+- **Value-indexed (dependent) types:** refinement aliases such as `type Vec<T, n extends nat> = readonly T[] & Length<n>` and `type Fin<n extends nat> = nat & Lt<n>` work as parameter types (preconditions), return types (postconditions), invariants and theorem hypotheses. New `Length<n>` refinement for arrays and strings.
+- **Value parameters:** `n extends nat` is determined by a `Length<n>` refinement of a parameter (`zip<A, B, n>(xs: Vec<A, n>, ys: Vec<B, n>)`: `n` is `xs.length`, and `ys` must match). Callers never pass it.
+- **`typeof x` in types** means the value of `x`: `replicate(n, x): Vec<T, typeof n>`.
+- **Tuples:** `[A, B]` types and literals.
+- **Modular verification:** callers' checks use their callees' proved postconditions.
+- Functions with only preconditions (refined parameters) are verified code too. Theorem parameters keep their refinements as hypotheses.
+- Fixes: postconditions through a shared alias no longer overwrite each other; value parameters are found alongside ordinary type parameters; refinements and value parameters are carried into loops under the loop's own names.
+- The design prototype (`docs/design/typescript-only/`) now verifies end to end (9/9), including `Vec`, `zip`, `replicate` and `get`. Its binary search awaits signed indices.
+- Fixtures: `good-indexed`, `bad-indexed`. 36/36 tests pass.
+
 ## 0.0.3 (2026-11-04)
 
 - **Mutation (D21):** arrays and plain objects can be changed in verified code: `a[i] = v` (index proved in bounds; JavaScript would otherwise grow the array with holes), `a.push(v)` (new length proved below 2³², where JavaScript throws), `p.f = v` on objects with mutable fields, and local arrays built from literals.

@@ -1,3 +1,5 @@
+// Not yet checked (excluded in tsconfig.json): binary search needs signed indices and
+// two-argument `every((x, i) => …)`, which ProofScript does not support yet.
 import type { Decreases, int, Is, Le, nat } from "./proofscript/index.ts";
 
 // Specs are ordinary, executable TypeScript predicates.
