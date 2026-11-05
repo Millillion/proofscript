@@ -1,6 +1,6 @@
 # Status and Evidence
 
-Last updated: 2026-11-03. See the [implementation plan](design/07-implementation-plan.md) for the milestones and the evidence strategy.
+Last updated: 2026-11-05 (0.0.6). See the [implementation plan](design/07-implementation-plan.md) for the milestones and the evidence strategy.
 
 ## Milestones
 
@@ -35,6 +35,7 @@ The kernel (`packages/kernel`) is the only trusted component.
 - End-to-end fixtures that must verify: `nat` arithmetic, a recursive tree type, automatically proved postconditions with preconditions, and loops (`sumOdds(n) === n * n` through a `while` loop's invariant; a `for` loop over an array with every index proved in bounds).
 - Red-team fixtures that must not: a false theorem; a proof using `sorry` (reported as *admitted*, never *verified*); IEEE-754 `number` arithmetic treated as integers; `===` on objects treated as structural equality; a wrong postcondition; a loop invariant that is not preserved; an out-of-bounds array read; a loop without a decreasing measure.
 - Every result carries a trust footprint: the axioms it depends on, and the TypeScript functions whose translation it trusts.
+- **Certificates (0.0.6):** projects can be checked without Lean against a certificate ([certificates](certificates.md)). Every statement, definition signature, definition equation and constructor in the repository binds (151 declarations); `examples/math` verifies 28/28 from its committed certificate. Forged certificates (made with Lean), corrupted proofs, a redefined library function, stale toolchains and edited sources never verify (`certificate.test.ts`).
 
 ## Known gaps
 
@@ -42,4 +43,4 @@ The kernel (`packages/kernel`) is the only trusted component.
 - Shared (aliased) mutable data, classes, async: not yet in the logic. Mutation is supported without aliasing (0.0.3).
 - Preconditions are enforced at calls inside verified code; calls from unverified code are not yet reported (the "boundary preconditions" audit).
 - Proving requires Lean (D30); its replacement by Lean in WebAssembly is planned (D31).
-- Certificate caching (checking without Lean) is not implemented yet; it needs the statement-binding check described in D30's notes.
+- A certificate cannot show that a recursive function terminates: its equation determines it only if it does. Results checked from a certificate list such functions as assumptions (Lean proved their termination when the certificate was made).

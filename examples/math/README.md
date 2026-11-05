@@ -10,8 +10,14 @@ A small mathematics library written in TypeScript and proved with ProofScript. E
 | `src/sort.ts` | Insertion sort, proved to return a sorted list with the same elements (with multiplicities) and the same length |
 | `src/vec.ts` | Value-indexed vectors: `Vec<T, n>`, `Fin<n>`, `replicate`, `zip`, `get` |
 
-Check it (Lean must be installed; see the repository README):
+Check it with Lean (installed with elan; see the repository README), saving a certificate:
 
 ```bash
-node --stack-size=65500 ../../packages/checker/src/cli.ts check tsconfig.json
+../../packages/checker/bin/proofscript.mjs check --write-certificate
+```
+
+Or check it without Lean, against the committed certificate ([how this works](../../docs/certificates.md)):
+
+```bash
+../../packages/checker/bin/proofscript.mjs check --certificate
 ```
