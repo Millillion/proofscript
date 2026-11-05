@@ -9,6 +9,21 @@ import type { GeneratedDecl } from "./translate.ts";
 /** The Lean version ProofScript's kernel is tested against (Lean Kernel Arena). */
 export const LEAN_TOOLCHAIN = "leanprover/lean4:v4.34.1";
 const LEAN4EXPORT_REPO = "https://github.com/leanprover/lean4export";
+/** The lean4export commit known to build with LEAN_TOOLCHAIN (as the Lean Kernel Arena builds it). */
+const LEAN4EXPORT_COMMIT = "df81913eee5519d5a88ae5b0fd701b5298cc29ab";
+
+/** Lean's tools (`lake`) on PATH, adding elan's default location if needed. */
+export function leanEnv(): NodeJS.ProcessEnv {
+  const elanBin = join(homedir(), ".elan", "bin");
+  const path = process.env.PATH ?? "";
+  return path.split(":").includes(elanBin) ? { ...process.env } : { ...process.env, PATH: `${path}:${elanBin}` };
+}
+
+/** Whether Lean's build tool is available (needed to prove, not to check certificates). */
+export function leanAvailable(): boolean {
+  const r = spawnSync("lake", ["--version"], { env: leanEnv(), encoding: "utf8" });
+  return r.status === 0;
+}
 const MODULE = "PSGen";
 
 export interface LeanMessage {
@@ -27,8 +42,10 @@ export interface LeanBuild {
 }
 
 function run(cmd: string, args: string[], cwd: string): { status: number; out: string } {
-  const r = spawnSync(cmd, args, { cwd, encoding: "utf8", maxBuffer: 1 << 30, env: { ...process.env } });
-  if (r.error !== undefined) throw new Error(`failed to run ${cmd}: ${r.error.message}. Is Lean (elan) installed? See https://lean-lang.org/install`);
+  const r = spawnSync(cmd, args, { cwd, encoding: "utf8", maxBuffer: 1 << 30, env: leanEnv() });
+  if (r.error !== undefined) {
+    throw new Error(`failed to run ${cmd}: ${r.error.message}. Proving needs Lean: install elan from https://lean-lang.org/install (the pinned toolchain is then installed automatically)`);
+  }
   return { status: r.status ?? 1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
 
@@ -84,8 +101,11 @@ export function ensureLean4export(): string {
   const bin = join(dir, ".lake", "build", "bin", "lean4export");
   if (existsSync(bin)) return bin;
   if (!existsSync(dir)) {
+    mkdirSync(join(homedir(), ".cache", "proofscript"), { recursive: true });
     const r = run("git", ["clone", "--quiet", LEAN4EXPORT_REPO, dir], homedir());
     if (r.status !== 0) throw new Error(`failed to clone lean4export: ${r.out}`);
+    const c = run("git", ["checkout", "--quiet", LEAN4EXPORT_COMMIT], dir);
+    if (c.status !== 0) throw new Error(`failed to check out lean4export ${LEAN4EXPORT_COMMIT}: ${c.out}`);
   }
   writeFileSync(join(dir, "lean-toolchain"), `${LEAN_TOOLCHAIN}\n`);
   const b = run("lake", ["build"], dir);
@@ -101,6 +121,7 @@ export function exportDecls(workDir: string, names: readonly string[]): string {
     cwd: workDir,
     encoding: "utf8",
     maxBuffer: 1 << 30,
+    env: leanEnv(),
   });
   if (r.status !== 0) throw new Error(`lean4export failed: ${r.stderr}`);
   writeFileSync(out, r.stdout);
