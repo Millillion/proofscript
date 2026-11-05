@@ -169,6 +169,12 @@ export function authenticate(env: Environment, roots: Iterable<Name>, isOwn: (n:
     if (ok.has(s) || isOwn(s)) continue;
     const c = env.get(n);
     if (c === undefined) return `${s} (missing)`;
+    // A theorem only ever stands for a proof: the kernel has checked it, and which proof it
+    // is cannot change a statement's meaning.
+    if (c.kind === "theorem") {
+      ok.add(s);
+      continue;
+    }
     const expected = lib[s];
     if (expected === undefined || expected.hash !== hasher.constant(c)) return s;
     ok.add(s);

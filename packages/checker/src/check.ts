@@ -2,6 +2,7 @@
 
 import { join, relative } from "node:path";
 import { type ConstantInfo, type Expr, Kernel, KernelError, name as kname, nameToString, parseExport, visit } from "@proofscript/kernel";
+import { withEquations, writeCertificate } from "./certificate.ts";
 import { buildLean, exportDecls } from "./lean.ts";
 import { type Project, loadProject } from "./project.ts";
 import { type Diagnostic, type GeneratedDecl, Translator } from "./translate.ts";
@@ -31,16 +32,26 @@ export interface CheckResult {
 /** Axioms of Lean's logic that ProofScript accepts as standard (design §6.7). */
 export const STANDARD_AXIOMS = new Set(["propext", "Quot.sound", "Classical.choice"]);
 
-export function check(target: string | readonly string[], workDir?: string): CheckResult {
-  const project = loadProject(target);
-  return checkProject(project, workDir ?? join(project.rootDir, ".proofscript", "lean"));
+export interface CheckOptions {
+  /** Where Lean builds (default: `.proofscript/lean` in the project). */
+  readonly workDir?: string;
+  /** Write a certificate of the checked declarations here (see certificate.ts). */
+  readonly writeCertificate?: string;
 }
 
-export function checkProject(project: Project, workDir: string): CheckResult {
+export function check(target: string | readonly string[], opts: CheckOptions = {}): CheckResult {
+  const project = loadProject(target);
+  return checkProject(project, opts.workDir ?? join(project.rootDir, ".proofscript", "lean"), opts);
+}
+
+export function checkProject(project: Project, workDir: string, opts: CheckOptions = {}): CheckResult {
   const files = project.program.getSourceFiles().filter((f) => !f.isDeclarationFile && !/node_modules/.test(f.fileName));
   const tr = new Translator(project);
-  const { decls, diagnostics, unverified } = tr.translateFiles(files);
-  const theorems = decls.filter((d) => d.kind === "theorem");
+  const translation = tr.translateFiles(files);
+  const { diagnostics, unverified } = translation;
+  // A certificate binds definitions by their equations, which Lean must prove too.
+  const decls = opts.writeCertificate === undefined ? translation.decls : withEquations(translation.decls);
+  const theorems = decls.filter((d) => d.kind === "theorem" && d.aux === undefined);
   const pos = (d: GeneratedDecl) => tr.diag(d.node, "");
   // Declarations that could not be translated are reported; everything else is still checked.
   // Definitions carry obligations of their own (bounds, preconditions, overflow), so they are
@@ -58,6 +69,8 @@ export function checkProject(project: Project, workDir: string): CheckResult {
       for (const [d, line] of starts) if (line <= m.line) owner = d;
       if (owner === undefined) continue;
       failed.add(owner);
+      // An equation that Lean cannot prove only leaves its definition out of the certificate.
+      if (owner.aux !== undefined) continue;
       const p = pos(owner);
       diagnostics.push({ ...p, message: explain(owner, m.text) });
     }
@@ -86,7 +99,8 @@ export function checkProject(project: Project, workDir: string): CheckResult {
 
   // 2. Export the proofs and check them with ProofScript's kernel (trusted).
   // Every surviving definition and theorem goes through the kernel.
-  const text = exportDecls(workDir, decls.filter((d) => !failed.has(d)).map((d) => d.leanName));
+  const checked = decls.filter((d) => !failed.has(d));
+  const text = exportDecls(workDir, checked.map((d) => d.leanName));
   const kernel = new Kernel();
   let count = 0;
   try {
@@ -100,6 +114,8 @@ export function checkProject(project: Project, workDir: string): CheckResult {
     diagnostics.push({ file: "", line: 0, column: 0, message: `the ProofScript kernel rejected the proof terms Lean produced: ${e.message}` });
     return { diagnostics, unverified, theorems: theorems.map((t) => ({ ...base(t, pos), status: "failed" as const, axioms: [], reflected: [], assumptions: [] })), declarationsChecked: count };
   }
+
+  if (opts.writeCertificate !== undefined) writeCertificate(opts.writeCertificate, text, checked.filter((d) => d.kind === "theorem" && d.aux === undefined).map((d) => d.leanName));
 
   const defNames = new Map(decls.filter((d) => d.kind === "def").map((d) => [d.leanName, d.tsName]));
   const defAssumptions = new Map(decls.filter((d) => d.kind === "def").map((d) => [d.leanName, d.assumptions ?? []]));

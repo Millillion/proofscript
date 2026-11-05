@@ -3,3 +3,5 @@ dist
 .proofscript-build
 .proofscript/
 .lake/
+packages/checker/test/.tmp/
+packages/checker/test/fixtures/*/proofscript.cert

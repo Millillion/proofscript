@@ -11,6 +11,6 @@
     "@proofscript/kernel": "*"
   },
   "bin": {
-    "proofscript": "./src/cli.ts"
+    "proofscript": "./bin/proofscript.mjs"
   }
 }

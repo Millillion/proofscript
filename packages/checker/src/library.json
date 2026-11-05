@@ -1163,6 +1163,10 @@
    "hash": "9da95c10966909f4c95e5fac48abb5e0",
    "binders": "iidd"
   },
+  "Prod.rec": {
+   "hash": "55d1d4440ff4e2095aac0d3daacaa64b",
+   "binders": "iiidd"
+  },
   "Prod.snd": {
    "hash": "3677966b2811acefd3513cc70e0f7471",
    "binders": "iid"

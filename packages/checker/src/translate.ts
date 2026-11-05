@@ -31,6 +31,8 @@ export class TranslationError extends Error {
 
 export interface GeneratedDecl {
   readonly kind: "inductive" | "def" | "theorem";
+  /** An auxiliary theorem for certificates (a definition's equation): never reported. */
+  readonly aux?: "eqn";
   /** For generated proof obligations (postconditions): what they establish. */
   readonly obligation?: string;
   /** Environment assumptions the translation of this definition relies on (D32). */

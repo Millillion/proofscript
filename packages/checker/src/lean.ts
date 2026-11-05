@@ -10,7 +10,7 @@ import type { GeneratedDecl } from "./translate.ts";
 export const LEAN_TOOLCHAIN = "leanprover/lean4:v4.34.1";
 const LEAN4EXPORT_REPO = "https://github.com/leanprover/lean4export";
 /** The lean4export commit known to build with LEAN_TOOLCHAIN (as the Lean Kernel Arena builds it). */
-const LEAN4EXPORT_COMMIT = "df81913eee5519d5a88ae5b0fd701b5298cc29ab";
+export const LEAN4EXPORT_COMMIT = "df81913eee5519d5a88ae5b0fd701b5298cc29ab";
 
 /** Lean's tools (`lake`) on PATH, adding elan's default location if needed. */
 export function leanEnv(): NodeJS.ProcessEnv {

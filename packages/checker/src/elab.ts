@@ -42,8 +42,9 @@ import {
   succ,
   visit,
   zero,
-  instantiateLevel,
   hasParam,
+  max as lmax,
+  imax as limax,
   ofNat as levelOfNat,
   type ConstantInfo,
 } from "@proofscript/kernel";
@@ -101,7 +102,7 @@ export const VOCABULARY: readonly string[] = [
     ...["OfNat.ofNat", "HAdd.hAdd", "HSub.hSub", "HMul.hMul", "HDiv.hDiv", "HMod.hMod", "HAppend.hAppend", "Neg.neg"],
     ...["LT.lt", "LE.le", "GT.gt", "GE.ge", "BEq.beq", "bne", "Bool.and", "Bool.or", "Bool.not"],
     ...["GetElem.getElem", "List.cons", "List.nil", "List.toArray", "List.length", "List.isPrefixOf", "List.isSuffixOf"],
-    ...["Array.size", "Array.push", "Array.set", "Array.contains", "Array.all", "Array.any", "UInt16.toNat", "Prod.fst", "Prod.snd"],
+    ...["Array.size", "Array.push", "Array.set", "Array.contains", "Array.all", "Array.any", "UInt16.toNat", "Prod.fst", "Prod.snd", "Prod.rec"],
     ...["Decidable", "OfNat", "HAdd", "HSub", "HMul", "HDiv", "HMod", "HAppend", "Add", "Sub", "Mul", "Div", "Mod", "Neg", "LT", "LE"],
     ...["Append", "BEq", "DecidableEq", "GetElem", "propext", "Quot.sound", "Classical.choice", "sorryAx"],
   ]),
@@ -174,13 +175,28 @@ export class Elaborator {
 
   instLevel(l: Level): Level {
     if (!hasParam(l)) return l;
-    const ps: Name[] = [];
-    const ls: Level[] = [];
-    for (const [n, v] of this.#lassign) {
-      ps.push(n);
-      ls.push(this.instLevel(v));
+    switch (l.kind) {
+      case "param": {
+        const v = this.#lassign.get(l.name);
+        return v === undefined ? l : this.instLevel(v);
+      }
+      case "succ":
+        return succ(this.instLevel(l.of));
+      case "max":
+        return lmax(this.instLevel(l.lhs), this.instLevel(l.rhs));
+      case "imax":
+        return limax(this.instLevel(l.lhs), this.instLevel(l.rhs));
+      default:
+        return l;
     }
-    return ps.length === 0 ? l : instantiateLevel(l, ps, ls);
+  }
+
+  #assignLevel(m: Name, v: Level): boolean {
+    const occurs = (x: Level): boolean =>
+      x.kind === "param" ? x.name === m : x.kind === "succ" ? occurs(x.of) : x.kind === "max" || x.kind === "imax" ? occurs(x.lhs) || occurs(x.rhs) : false;
+    if (occurs(v)) return false;
+    this.#lassign.set(m, v);
+    return true;
   }
 
   /** Replaces assigned metavariables (of terms and levels). */
@@ -249,14 +265,8 @@ export class Elaborator {
     const a = this.instLevel(a0);
     const b = this.instLevel(b0);
     if (a.hash === b.hash && levelEquiv(a, b)) return true;
-    if (a.kind === "param" && this.#lmvars.has(a.name)) {
-      this.#lassign.set(a.name, b);
-      return true;
-    }
-    if (b.kind === "param" && this.#lmvars.has(b.name)) {
-      this.#lassign.set(b.name, a);
-      return true;
-    }
+    if (a.kind === "param" && this.#lmvars.has(a.name)) return this.#assignLevel(a.name, b);
+    if (b.kind === "param" && this.#lmvars.has(b.name)) return this.#assignLevel(b.name, a);
     if (a.kind === "succ" && b.kind === "succ") return this.unifyLevel(a.of, b.of);
     // A closed level is a number: `max 1 1` against `?u + 1` solves `?u := 0`.
     const na = closedLevel(a);
@@ -292,8 +302,10 @@ export class Elaborator {
     if (!exprEq(a1, a) || !exprEq(b1, b)) return this.unify(a1, b1);
     const da = this.tc.isDelta(a);
     const db = this.tc.isDelta(b);
-    const ha = da?.kind === "definition" && da.hints.kind === "regular" ? da.hints.height : 0;
-    const hb = db?.kind === "definition" && db.hints.kind === "regular" ? db.hints.height : 0;
+    // As Lean's lazy delta reduction: abbreviations first, then the greater height.
+    const rank = (d: typeof da) => (d?.kind !== "definition" ? -1 : d.hints.kind === "abbrev" ? Infinity : d.hints.kind === "regular" ? d.hints.height : -1);
+    const ha = rank(da);
+    const hb = rank(db);
     if (da !== undefined && (db === undefined || ha >= hb)) return this.unify(this.tc.unfoldDefinition(a)!, b);
     if (db !== undefined) return this.unify(a, this.tc.unfoldDefinition(b)!);
     return false;
@@ -527,6 +539,7 @@ export class Elaborator {
   /** Elaborates `t`, of type `expected` if given. */
   elab(t: Term, expected: Expr | undefined): Expr {
     const e = this.#elab(t, expected);
+    if (expected !== undefined) this.#solvePending(false);
     if (expected !== undefined && !this.unify(this.infer(e), expected)) {
       throw new ElabError(`type mismatch in ${t.k}: ${exprToString(this.inst(this.infer(e)))} vs ${exprToString(this.inst(expected))}`);
     }
@@ -923,6 +936,8 @@ export class Elaborator {
     let recE: Expr = apps(constant(rec.name, recLevels), params);
     // Determine the motive lazily: elaborate alternatives first if needed.
     const motiveVar = this.#newMVar(pi(kname("x"), dty, sort(this.#newLevel())));
+    const rw = this.whnf(this.infer(recE));
+    if (rw.kind !== "pi" || !this.unify(motiveVar.type, rw.binderType)) throw new ElabError("bad recursor motive");
     recE = app(recE, motiveVar);
     let rt = this.infer(recE);
     for (const cname of ind.ctors) {

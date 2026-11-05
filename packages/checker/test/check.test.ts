@@ -2,13 +2,13 @@
 // (elan) and lean4export; they are skipped when Lean is not installed.
 
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { test } from "node:test";
 import { type CheckResult, check } from "../src/check.ts";
+import { leanAvailable } from "../src/lean.ts";
 
 const fixtures = new URL("./fixtures/", import.meta.url).pathname;
-const hasLean = spawnSync("lake", ["--version"]).status === 0;
+const hasLean = leanAvailable();
 const run = (name: string): CheckResult => check(join(fixtures, name, "tsconfig.json"));
 
 test("good-nat: arithmetic theorems verify, with no axioms beyond the standard ones", { skip: !hasLean }, () => {
