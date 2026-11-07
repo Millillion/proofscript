@@ -57,7 +57,7 @@ export interface CertificateHeader {
 
 /** Splits generated `def` source into its binder groups and its body. */
 export function splitDef(src: string): { name: string; binders: string[]; type: string; body: string } | undefined {
-  const m = /^(?:@\[[^\]]*\] )?def (\S+)/.exec(src);
+  const m = /^(?:set_option \S+ \S+ in\n)*(?:@\[[^\]]*\] )?def (\S+)/.exec(src);
   if (m === null) return undefined;
   let i = m[0].length;
   const binders: string[] = [];

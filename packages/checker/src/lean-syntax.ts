@@ -76,7 +76,7 @@ const SYMBOLS = [
   "(", ")", "[", "]", "{", "}", ",", ":", "|", "'", ";", "+", "-", "*", "/", "%", "<", ">", "=", "!", "_",
   "≤", "≥", "≠", "∧", "∨", "¬", "↔", "→", "×", "∀", "∃", "λ", ".",
 ];
-const KEYWORDS = new Set(["fun", "let", "have", "if", "then", "else", "match", "with", "by", "theorem", "def", "inductive", "where", "termination_by"]);
+const KEYWORDS = new Set(["fun", "let", "have", "if", "then", "else", "match", "with", "by", "theorem", "def", "inductive", "where", "termination_by", "set_option", "in"]);
 
 const isIdStart = (c: string) => /[A-Za-z_α-ωΑ-Ω]/.test(c) && c !== "λ";
 const isIdChar = (c: string) => /[A-Za-z0-9_'!?α-ωΑ-Ω₀-₉]/.test(c) && c !== "λ";
@@ -209,6 +209,13 @@ class Parser {
   // ---- Declarations ---------------------------------------------------------------------------
 
   decl(): Decl {
+    // `set_option name value in` before a declaration only changes how Lean works on it.
+    while (this.at("set_option")) {
+      this.next();
+      this.next();
+      this.next();
+      this.expect("in");
+    }
     if (this.at("@[")) {
       this.next();
       this.skipTactic();

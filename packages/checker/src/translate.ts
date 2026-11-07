@@ -1172,7 +1172,7 @@ export class Translator {
    * and division guards): linear arithmetic, then unfolding the predicates the
    * condition mentions with simplification, arithmetic and `grind`.
    */
-  auto(propDeps: Iterable<string>): string {
+  auto(propDeps: Iterable<string>, quantified = false): string {
     // Callees with postconditions are used through them (modular reasoning): kept folded,
     // with their lemmas given to grind.
     const names = [...this.decls.values()].map((d) => d.leanName);
@@ -1189,7 +1189,11 @@ export class Translator {
     const copied = copies === "" ? "" : ` | ((try simp (config := { zetaDelta := true }) only []) <;> ${copies} <;> simp_all${set} <;> omega)`;
     // Quantified facts about arrays after writes: split each read of a written array.
     const arrays = ` | (intros; simp only [Array.getElem_set, Array.size_set] at *; repeat' split; all_goals (try subst_vars) <;> (try rfl) <;> (try (simp_all${set}; done)) <;> (try (simp_all${set} <;> omega)) <;> (try (apply_assumption <;> simp_all <;> omega)))`;
-    return `by first | omega | (simp_all${set} <;> omega) | (simp_all${set} <;> grind)${viaLemmas}${arrays} | (simp_all (config := { zetaDelta := true })${set} <;> omega)${copied} | ((try simp (config := { zetaDelta := true }) only []) <;> (try clear_value *) <;> simp_all${set} <;> omega) | grind | decide`;
+    // The same, with grind: case splits, congruence and arithmetic over the written positions.
+    const arraysGrind = ` | (intros; simp (config := { zetaDelta := true }) only [Array.getElem_set, Array.size_set]; split <;> (try split) <;> (try split) <;> (try split) <;> first | grind${closure.map((d) => ` | grind [${d}]`).join("")}${closure.length > 1 ? ` | grind [${closure.join(", ")}]` : ""})`;
+    // A quantified goal (a specification predicate) is about arrays: their alternatives first.
+    if (quantified) return `by first${arraysGrind}${arrays} | omega | (simp_all${set} <;> grind)${viaLemmas} | grind`;
+    return `by first | omega | (simp_all${set} <;> omega) | (simp_all${set} <;> grind)${viaLemmas}${arrays}${arraysGrind} | (simp_all (config := { zetaDelta := true })${set} <;> omega)${copied} | ((try simp (config := { zetaDelta := true }) only []) <;> (try clear_value *) <;> simp_all${set} <;> omega) | grind | decide`;
   }
 
   /** Proof that an index is in bounds: Lean's tactic, then simplification that sees through `let`s. */
@@ -1795,12 +1799,14 @@ export class Translator {
     // An invariant is proved at each recursive call, in the body's context: its tactic may
     // need to unfold what the body uses.
     this.#scopeHyps = [...new Set([...outerHyps, ...helperHyps])];
-    const invBinders = invariants.map(({ p, pd }, idx) => `(inv_${idx} : ${p} := ${this.auto(new Set([...pd, ...deps]))})`);
+    const invBinders = invariants.map(({ p, pd }, idx) => `(inv_${idx} : ${p} := ${this.auto(new Set([...pd, ...deps]), p.includes("∀"))})`);
     const sizeBinders = this.#guardCount === loopGuardsBefore ? [] : params.flatMap((p) => arraySizeBinder(p.name, p.ty, this.auto(deps)));
     this.#scopeHyps = outerHyps;
     const binders = [...tps, ...params.map((p) => `(${p.name} : ${p.ty})`), ...sizeBinders, ...preBinders, ...invBinders];
     const term = measure === undefined ? "" : `\ntermination_by ${measure}`;
-    const source = `def ${name}${binders.map((b) => ` ${b}`).join("")} : ${fn.ret} :=\n  ${indent(helperBody, 2)}${term}`;
+    // Quantified invariants need more of Lean's automation (bounded by the memory cap, D41).
+    const budget = invariants.some(({ p }) => p.includes("∀")) ? "set_option maxHeartbeats 1000000 in\n" : "";
+    const source = `${budget}def ${name}${binders.map((b) => ` ${b}`).join("")} : ${fn.ret} :=\n  ${indent(helperBody, 2)}${term}`;
     const key = node;
     this.decls.set(key, { kind: "def", tsName: `${fn.tsName} (loop)`, leanName: name, node, source, deps: helperDeps, assumptions: [...this.#assumptions] });
     const list = this.#loops.get(fn.leanName) ?? [];

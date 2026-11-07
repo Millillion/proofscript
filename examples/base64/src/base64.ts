@@ -1,25 +1,18 @@
 // Base64 encoding and decoding with base64-js's behaviour, verified: every array access is
 // in bounds, no arithmetic overflows, every output byte is a byte, and the output lengths
 // are exact.
-import type { Decreases, Is, Le, Modifies, int, nat } from "proofscript";
+import { forall, implies, type Decreases, type Holds, type Is, type Le, type Modifies, type int, type nat } from "proofscript";
 import { decodeUnit, encodeUnit } from "./alphabet.ts";
-import { byte0, byte1, byte2, sextet0, sextet1, sextet2, sextet3 } from "./group.ts";
+import { byte0, byte1, byte2, sextet0, sextet1, sextet2, sextet3, sextetAt } from "./group.ts";
 
-export function multipleOf3(i: nat): boolean {
-  return i % 3 === 0;
-}
-
-/** `full` is `n` without its last incomplete group of three. */
-export function wholeGroups(full: nat, n: nat): boolean {
-  return full === n - (n % 3);
-}
-
-export function isLength(n: nat, bytes: readonly int[]): boolean {
-  return n === bytes.length;
-}
-
-export function multipleOf4(i: nat): boolean {
-  return i % 4 === 0;
+/** The first `g` groups of three bytes are encoded: unit `4h + r` is sextet `r` of group `h`. */
+export function encodedGroups(out: readonly nat[], bytes: readonly int[], g: nat): boolean {
+  return forall((h: nat, r: nat) =>
+    implies(
+      h < g && r < 4 && 4 * h + r < out.length && 3 * h + 2 < bytes.length,
+      out[4 * h + r] === encodeUnit(sextetAt(bytes[3 * h] & 0xff, bytes[3 * h + 1] & 0xff, bytes[3 * h + 2] & 0xff, r)),
+    ),
+  );
 }
 
 /** The encoded length of `bytes`: four characters per group of up to three. */
@@ -31,9 +24,17 @@ export function holdsEncoded(out: readonly nat[], bytes: readonly int[]): boolea
   return out.length >= Math.floor((bytes.length + 2) / 3) * 4;
 }
 
-/** Where the `j`-th output unit of the `i`-th byte goes: four units per three bytes. */
-export function unitsFor(j: nat, i: nat): boolean {
-  return j % 4 === 0 && Math.floor(j / 4) === Math.floor(i / 3);
+/** `groups` is the number of whole groups of three in `n` bytes. */
+export function wholeGroupsOf(groups: nat, n: nat): boolean {
+  return groups === Math.floor(n / 3);
+}
+
+export function isLength(n: nat, bytes: readonly int[]): boolean {
+  return n === bytes.length;
+}
+
+export function multipleOf4(i: nat): boolean {
+  return i % 4 === 0;
 }
 
 /**
@@ -43,26 +44,26 @@ export function unitsFor(j: nat, i: nat): boolean {
  */
 export function encodeInto(bytes: readonly int[], out: nat[] & Is<typeof holdsEncoded, [typeof bytes]>): void & Modifies<typeof out> {
   const n = bytes.length;
-  const full = n - (n % 3);
-  let i = 0;
-  let j = 0;
-  while (i < full) {
-    i satisfies Le<typeof full> & Is<typeof multipleOf3>;
-    full satisfies Is<typeof wholeGroups, [typeof n]>;
+  const groups = Math.floor(n / 3);
+  let g = 0;
+  while (g < groups) {
+    g satisfies Le<typeof groups>;
+    groups satisfies Is<typeof wholeGroupsOf, [typeof n]>;
     n satisfies Is<typeof isLength, [typeof bytes]>;
     out satisfies Is<typeof holdsEncoded, [typeof bytes]>;
-    j satisfies Is<typeof unitsFor, [typeof i]>;
-    full - i satisfies Decreases;
-    const a = bytes[i] & 0xff;
-    const b = bytes[i + 1] & 0xff;
-    const c = bytes[i + 2] & 0xff;
-    out[j] = encodeUnit(sextet0(a));
-    out[j + 1] = encodeUnit(sextet1(a, b));
-    out[j + 2] = encodeUnit(sextet2(b, c));
-    out[j + 3] = encodeUnit(sextet3(c));
-    i = i + 3;
-    j = j + 4;
+    out satisfies Holds<typeof encodedGroups, [typeof out, typeof bytes, typeof g]>;
+    groups - g satisfies Decreases;
+    const a = bytes[3 * g] & 0xff;
+    const b = bytes[3 * g + 1] & 0xff;
+    const c = bytes[3 * g + 2] & 0xff;
+    out[4 * g] = encodeUnit(sextet0(a));
+    out[4 * g + 1] = encodeUnit(sextet1(a, b));
+    out[4 * g + 2] = encodeUnit(sextet2(b, c));
+    out[4 * g + 3] = encodeUnit(sextet3(c));
+    g = g + 1;
   }
+  const j = 4 * groups;
+  const full = 3 * groups;
   if (n - full === 1) {
     const a = bytes[full] & 0xff;
     out[j] = encodeUnit(sextet0(a));

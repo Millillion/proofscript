@@ -46,3 +46,11 @@ export function pair_round_trip(a: nat, b: nat): Proof {
 export function single_round_trip(a: nat): Proof {
   return prove(implies(a < 256, byte0(sextet0(a), sextet1(a, 0)) === a), by(intro("h"), unfold(byte0, sextet0, sextet1), omega));
 }
+
+/** The `r`-th sextet of the group `a, b, c`. */
+export function sextetAt(a: nat & Lt<256>, b: nat & Lt<256>, c: nat & Lt<256>, r: nat & Lt<4>): nat & Lt<64> {
+  if (r === 0) return sextet0(a);
+  if (r === 1) return sextet1(a, b);
+  if (r === 2) return sextet2(b, c);
+  return sextet3(c);
+}
