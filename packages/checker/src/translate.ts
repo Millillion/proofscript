@@ -1726,7 +1726,7 @@ export class Translator {
       if (!/^[0-9]+$/.test(e.text)) return this.fail(e, "only non-negative integer literals are supported in the logic yet");
       return e.text;
     }
-    if (ts.isBigIntLiteral(e)) return `(${e.text.slice(0, -1)} : Int)`;
+    if (ts.isBigIntLiteral(e)) return `(${e.text.slice(0, -1)} : ${this.bigLiteralType(e, scope)})`;
     if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.MinusToken && ts.isNumericLiteral(e.operand) && /^[0-9]+$/.test(e.operand.text)) {
       return `(-${e.operand.text} : Int)`;
     }
@@ -1878,7 +1878,7 @@ export class Translator {
     }
     // D32: in running code, `nat`/`int` arithmetic is exact only up to 2^53 - 1.
     // (`bigint` is exact; specs and theorems use exact arithmetic.)
-    const exact = kinds.includes("bigint") || !this.#runtime;
+    const exact = kinds.includes("bigint") || this.isBigIntExpr(left) || this.isBigIntExpr(right) || !this.#runtime;
     if (!exact && !(op === "-" && this.isNatExpr(left, scope))) {
       if (op === "+" && this.isCounting(at) && countTerms(at) <= 64) {
         // Counting (`1 + length(tail)`, `length(xs) + length(ys)`): every count is
@@ -1917,8 +1917,71 @@ export class Translator {
     return false;
   }
 
+  /** A bigint literal is a `Nat` where it meets one (`n === 0n`, `return 0n` from a `Nat` function), else an `Int`. */
+  bigLiteralType(e: ts.Expression, scope: Scope): "Nat" | "Int" {
+    let cur: ts.Node = e;
+    for (let p = e.parent; p !== undefined; cur = p, p = p.parent) {
+      if (ts.isParenthesizedExpression(p) || ts.isConditionalExpression(p)) continue;
+      if (ts.isBinaryExpression(p)) {
+        const other = p.left === cur ? p.right : p.left;
+        const k = this.kindOf(other, scope);
+        if (k === "nat") return "Nat";
+        if (k === "int") return "Int";
+        if (k === "bigint" || k === "literal") continue;
+        return "Int";
+      }
+      if (ts.isReturnStatement(p) || ts.isArrowFunction(p)) {
+        const fn = ts.isArrowFunction(p) ? p : ts.findAncestor(p, ts.isFunctionLike);
+        const k = fn?.type === undefined ? "other" : this.kindOfTypeNode(fn.type);
+        return k === "nat" ? "Nat" : "Int";
+      }
+      if (ts.isCallExpression(p)) {
+        const sig = this.checker.getResolvedSignature(p);
+        const i = p.arguments.indexOf(cur as ts.Expression);
+        const decl = sig?.declaration;
+        const param = decl !== undefined && i >= 0 && "parameters" in decl ? (decl.parameters as ts.NodeArray<ts.ParameterDeclaration>)[i] : undefined;
+        return param?.type !== undefined && this.kindOfTypeNode(param.type) === "nat" ? "Nat" : "Int";
+      }
+      return "Int";
+    }
+    return "Int";
+  }
+
+  /** Whether TypeScript itself types `e` as a bigint (exact arithmetic). */
+  isBigIntExpr(e: ts.Expression): boolean {
+    return (this.checker.getTypeAtLocation(e).flags & ts.TypeFlags.BigIntLike) !== 0;
+  }
+
   isNatExpr(e: ts.Expression, scope: Scope): boolean {
     return this.kindOf(e, scope) === "nat";
+  }
+
+  kindOfTypeNode(t: ts.TypeNode | undefined): ReturnType<Translator["kindOf"]> {
+    const fromTypeNode = (x: ts.TypeNode | undefined) => this.kindOfTypeNode(x);
+    if (t === undefined) return "other";
+    if (ts.isIntersectionTypeNode(t)) {
+      for (const m of t.types) {
+        const k = fromTypeNode(m);
+        if (k !== "other") return k;
+      }
+      return "other";
+    }
+    if (t.kind === ts.SyntaxKind.BooleanKeyword) return "boolean";
+    if (t.kind === ts.SyntaxKind.StringKeyword) return "string";
+    if (t.kind === ts.SyntaxKind.BigIntKeyword) return "bigint";
+    if (ts.isTypeReferenceNode(t)) {
+      const ad = this.declOf(t.typeName);
+      if (this.isRefinementAlias(ad)) return fromTypeNode(ad.type);
+      const n = this.ps(t.typeName);
+      if (n === "nat" || n === "Nat") return "nat";
+      if (n === "int" || n === "Int") return "int";
+      if (n === undefined) {
+        const sym = this.checker.getSymbolAtLocation(t.typeName);
+        const d = sym?.declarations?.[0];
+        if (d !== undefined && ts.isTypeParameterDeclaration(d)) return fromTypeNode(d.constraint);
+      }
+    }
+    return "other";
   }
 
   /**
@@ -1930,32 +1993,7 @@ export class Translator {
     if (ts.isNumericLiteral(e)) return "literal";
     if (ts.isBigIntLiteral(e)) return "bigint";
     if (ts.isStringLiteral(e) || ts.isNoSubstitutionTemplateLiteral(e)) return "string";
-    const fromTypeNode = (t: ts.TypeNode | undefined): ReturnType<Translator["kindOf"]> => {
-      if (t === undefined) return "other";
-      if (ts.isIntersectionTypeNode(t)) {
-        for (const m of t.types) {
-          const k = fromTypeNode(m);
-          if (k !== "other") return k;
-        }
-        return "other";
-      }
-      if (t.kind === ts.SyntaxKind.BooleanKeyword) return "boolean";
-      if (t.kind === ts.SyntaxKind.StringKeyword) return "string";
-      if (t.kind === ts.SyntaxKind.BigIntKeyword) return "bigint";
-      if (ts.isTypeReferenceNode(t)) {
-        const ad = this.declOf(t.typeName);
-        if (this.isRefinementAlias(ad)) return fromTypeNode(ad.type);
-        const n = this.ps(t.typeName);
-        if (n === "nat" || n === "Nat") return "nat";
-        if (n === "int" || n === "Int") return "int";
-        if (n === undefined) {
-          const sym = this.checker.getSymbolAtLocation(t.typeName);
-          const d = sym?.declarations?.[0];
-          if (d !== undefined && ts.isTypeParameterDeclaration(d)) return fromTypeNode(d.constraint);
-        }
-      }
-      return "other";
-    };
+    const fromTypeNode = (t: ts.TypeNode | undefined) => this.kindOfTypeNode(t);
     if (ts.isIdentifier(e)) {
       const d = this.declOf(e);
       if (d !== undefined && (ts.isParameter(d) || ts.isVariableDeclaration(d))) return fromTypeNode(d.type ?? undefined) !== "other" ? fromTypeNode(d.type) : d.initializer !== undefined && ts.isVariableDeclaration(d) ? this.kindOf(d.initializer, scope) : "other";

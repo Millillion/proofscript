@@ -64,6 +64,14 @@ test("examples/math verifies from its committed certificate, without Lean", () =
   assert.ok(rev.assumptions.some((a) => /terminate/.test(a)), "termination taken from the certificate is an assumption");
 });
 
+test("examples/tutorial verifies from its committed certificate, without Lean", () => {
+  const dir = new URL("../../../examples/tutorial/", import.meta.url).pathname;
+  const r = replay(dir);
+  assert.deepEqual(r.diagnostics, []);
+  assert.equal(r.theorems.length, 12);
+  assert.ok(r.theorems.every((t) => t.status === "verified"));
+});
+
 test("a changed statement is not covered by an old certificate", () => {
   const dir = copy(mathDir, "math-changed");
   const f = join(dir, "src", "nat.ts");

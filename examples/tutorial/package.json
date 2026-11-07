@@ -1,0 +1,7 @@
+{
+  "name": "@proofscript/example-tutorial",
+  "version": "0.0.7",
+  "private": true,
+  "type": "module",
+  "description": "The code of the ProofScript tutorial (docs/tutorial.md), checked by the test suite"
+}

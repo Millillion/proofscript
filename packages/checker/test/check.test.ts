@@ -166,3 +166,10 @@ test("boundary: callers outside the logic are reported, never silently trusted",
   assert.deepEqual(r.diagnostics, []);
   assert.ok(r.unverified.some((u) => /call of pred from a function outside the logic/.test(u.message)));
 });
+
+test("examples/tutorial: every step of the tutorial verifies", { skip: !hasLean }, () => {
+  const r = check(new URL("../../../examples/tutorial/tsconfig.json", import.meta.url).pathname);
+  assert.deepEqual(r.diagnostics, []);
+  assert.equal(r.theorems.length, 12);
+  assert.ok(r.theorems.every((t) => t.status === "verified"));
+});

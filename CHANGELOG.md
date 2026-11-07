@@ -2,6 +2,15 @@
 
 ProofScript ships patch releases (0.0.x) until the 0.1.0 MVP. See [docs/v0.1.md](docs/v0.1.md).
 
+## 0.0.7 (2026-11-06)
+
+- **`proofscript audit`:** what a project's results rest on. It collects, over the whole project, each axiom, trusted translation and assumption, with the theorems that depend on it. It also reports the **boundary** (exported functions with preconditions, and calls from unverified code that nothing proves) and the trusted base. `--json` prints it for tools; it works with Lean or from a certificate.
+- **Callers are checked:** a function without a spec of its own that calls a function with preconditions is now verified code, so the preconditions are proved at the call. If it cannot be translated (for example, it uses `number`), the call is reported as unverified rather than trusted silently. The audit found such a call in `examples/math` (`third()` calling `get`), which is now proved.
+- **`Nat` and `Int` (bigint) arithmetic is exact:** no 2⁵³ overflow checks, as in JavaScript. Bigint literals take their type from context (`n === 0n` on a `Nat` is `Nat`), instead of always `Int`.
+- **Docs:** a [tutorial](docs/tutorial.md), whose code is a checked project ([`examples/tutorial`](examples/tutorial), 12 theorems, with a certificate), and a [reference](docs/reference.md) for every ProofScript type, function, tactic and supported TypeScript construct. The README describes the working system.
+- Termination assumptions from certificates are listed per function.
+- Fixtures: `bad-caller`, `boundary`. Tests: `audit.test.ts`, tutorial tests. 57/57 tests pass.
+
 ## 0.0.6 (2026-11-05)
 
 - **Proof certificates: checking without Lean.** `proofscript check --write-certificate` proves with Lean and saves `proofscript.cert` (the kernel export of every checked declaration, gzipped). `proofscript check --certificate` checks the project against it with only Node: every declaration is re-checked by ProofScript's kernel, and every theorem, definition and type is *bound* to the current TypeScript. A theorem verifies only if it is bound; anything not covered (an edited statement, a new theorem) is reported as needing Lean, never as verified.

@@ -1,6 +1,6 @@
 # Status and Evidence
 
-Last updated: 2026-11-05 (0.0.6). See the [implementation plan](design/07-implementation-plan.md) for the milestones and the evidence strategy.
+Last updated: 2026-11-06 (0.0.7). See the [implementation plan](design/07-implementation-plan.md) for the milestones and the evidence strategy.
 
 ## Milestones
 
@@ -41,6 +41,6 @@ The kernel (`packages/kernel`) is the only trusted component.
 
 - Overflow bounds that need nonlinear arithmetic (e.g. `n * n` under a bound on `n`) are not proved automatically yet.
 - Shared (aliased) mutable data, classes, async: not yet in the logic. Mutation is supported without aliasing (0.0.3).
-- Preconditions are enforced at calls inside verified code; calls from unverified code are not yet reported (the "boundary preconditions" audit).
+- Preconditions are proved at every call in verified code, and functions that call ones with preconditions are verified code. Calls from code outside the logic (and from outside the project, for exported functions) are reported by `proofscript audit`, not proved.
 - Proving requires Lean (D30); its replacement by Lean in WebAssembly is planned (D31).
 - A certificate cannot show that a recursive function terminates: its equation determines it only if it does. Results checked from a certificate list such functions as assumptions (Lean proved their termination when the certificate was made).
