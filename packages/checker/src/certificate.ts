@@ -126,6 +126,10 @@ function withoutFacts(body: string): string {
 /** Occurrences of the name `f` itself (not `f.post_0`, not a longer name). */
 const selfRef = (f: string) => new RegExp(`${f.replace(/[.]/g, "\\.")}(?![\\w.'])`, "g");
 
+/** Size limits for generating uniqueness theorems (see `uniquenessDecl`). */
+export const UNIQUENESS_MAX_CHARS = 10000;
+export const UNIQUENESS_MAX_LETS = 8;
+
 /**
  * For a recursive `f`: every function satisfying `f`'s equation is `f`.
  *
@@ -141,6 +145,9 @@ export function uniquenessDecl(def: GeneratedDecl): GeneratedDecl | undefined {
   const f = def.leanName;
   const body = withoutFacts(parts.body);
   if (!selfRef(f).test(body)) return undefined;
+  // Lean's automatic proof grows with the body; on large loop bodies it has needed over
+  // 17 GB. Those keep termination as an assumption (reported in results) instead.
+  if (body.length > UNIQUENESS_MAX_CHARS || (body.match(/^\s*let /gm) ?? []).length > UNIQUENESS_MAX_LETS) return undefined;
   const plain = parts.binders.map(plainBinder);
   const args = plain.filter((b) => b.explicit).flatMap((b) => b.names);
   const g = "ps_g";

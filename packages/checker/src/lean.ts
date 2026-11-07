@@ -41,8 +41,24 @@ export interface LeanBuild {
   readonly source: string;
 }
 
+let cgroups: boolean | undefined;
+
+/**
+ * `cmd args` with Lean's memory capped where the system can enforce it: on Linux with a
+ * systemd user session, in a scope of its own (Lean's `-M` is not a hard limit). A proof that
+ * explodes then fails this build instead of exhausting the machine.
+ */
+export function capped(cmd: string, args: readonly string[]): [string, string[]] {
+  if (process.platform !== "linux" || process.env.PROOFSCRIPT_NO_CGROUP !== undefined) return [cmd, [...args]];
+  cgroups ??= spawnSync("systemd-run", ["--user", "--scope", "--quiet", "-p", "MemoryMax=64M", "true"], { encoding: "utf8" }).status === 0;
+  if (!cgroups) return [cmd, [...args]];
+  const mb = process.env.PROOFSCRIPT_LEAN_MEMORY ?? "4096";
+  return ["systemd-run", ["--user", "--scope", "--quiet", "-p", `MemoryMax=${mb}M`, "-p", "MemorySwapMax=0", "--", cmd, ...args]];
+}
+
 function run(cmd: string, args: string[], cwd: string): { status: number; out: string } {
-  const r = spawnSync(cmd, args, { cwd, encoding: "utf8", maxBuffer: 1 << 30, env: leanEnv() });
+  const [c, a] = cmd === "lake" ? capped(cmd, args) : [cmd, args];
+  const r = spawnSync(c, a, { cwd, encoding: "utf8", maxBuffer: 1 << 30, env: leanEnv() });
   if (r.error !== undefined) {
     throw new Error(`failed to run ${cmd}: ${r.error.message}. Proving needs Lean: install elan from https://lean-lang.org/install (the pinned toolchain is then installed automatically)`);
   }
@@ -95,7 +111,11 @@ export function buildLean(workDir: string, decls: readonly GeneratedDecl[]): Lea
   }
   flush();
   if (r.status !== 0 && messages.every((m) => m.severity !== "error")) {
-    messages.push({ line: 1, column: 1, severity: "error", text: r.out.trim().split("\n").slice(-20).join("\n") });
+    const oom = r.status === 137 || /\bKilled\b|out of memory/i.test(r.out);
+    const text = oom
+      ? `Lean ran out of memory (limit ${process.env.PROOFSCRIPT_LEAN_MEMORY ?? "4096"} MB; raise it with PROOFSCRIPT_LEAN_MEMORY, or simplify the proof that is expensive)`
+      : r.out.trim().split("\n").slice(-20).join("\n");
+    messages.push({ line: 1, column: 1, severity: "error", text });
   }
   return { ok: r.status === 0, messages, lines, source };
 }
@@ -124,7 +144,8 @@ export function ensureLean4export(): string {
 export function exportDecls(workDir: string, names: readonly string[]): string {
   const bin = ensureLean4export();
   const out = join(workDir, "export.ndjson");
-  const r = spawnSync("lake", ["env", bin, MODULE, "--", ...names], {
+  const [c, a] = capped("lake", ["env", bin, MODULE, "--", ...names]);
+  const r = spawnSync(c, a, {
     cwd: workDir,
     encoding: "utf8",
     maxBuffer: 1 << 30,

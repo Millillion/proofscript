@@ -4,9 +4,13 @@ ProofScript ships patch releases (0.0.x) until the 0.1.0 MVP. See [docs/v0.1.md]
 
 ## 0.0.9 (2026-11-07)
 
-- **Certificates establish termination.** Every recursive function (including every loop) now also has a uniqueness theorem: any function satisfying its equation equals it. Lean proves it along the function's own recursion when the certificate is made, and ProofScript binds it like every other statement. Results checked from certificates no longer list "terminates (proved by Lean when the certificate was made)", unless Lean could not prove one. All examples and fixtures are covered.
+- **Certificates establish termination.** Every recursive function (including every loop) now also has a uniqueness theorem: any function satisfying its equation equals it. Lean proves it along the function's own recursion when the certificate is made, and ProofScript binds it like every other statement. Results checked from certificates no longer list "terminates (proved by Lean when the certificate was made)", unless Lean could not prove one. Covered: every loop in the fixtures and `examples/math`; base64's two large loops keep the assumption (D42). 65/65 tests pass.
+- **Memory safety:** a uniqueness proof on base64's decoding loop grew Lean to 17 GB, and twice took down Claude Desktop (whose OOM policy stops every session). Now:
+  - Lean runs in a memory-capped systemd scope on Linux (`PROOFSCRIPT_LEAN_MEMORY`, default 4096 MB). Exceeding it fails that build with a plain message.
+  - Uniqueness theorems are generated only for bounded bodies (D41, D42).
+  - `scripts/capped.sh` runs development jobs one at a time under a 6 GB cap.
 - **Elaborator:** dependent arrow types (`(x : A) → B`, with implicit binders and tactic defaults) and `∀ {T : Type} …` binders.
-- **Decision log D34–D40**, and a [review queue](docs/review-queue.md) of the decisions that need Jordan's review before 0.1.0.
+- **Decision log D34–D43** (D43, specification predicates, is proposed for 0.0.10), and a [review queue](docs/review-queue.md) of the decisions that need Jordan's review before 0.1.0.
 
 ## 0.0.8 (2026-11-07)
 

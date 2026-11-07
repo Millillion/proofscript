@@ -241,4 +241,15 @@ When a decision changes, update its entry and note the date rather than deleting
 ### D40. examples/base64 architecture — **Decided** (2026-11-07)
 - A verified core writes into caller-allocated buffers (no string building, which in V8 would cost gigabytes on large inputs); a thin unverified wrapper allocates and converts. Deliberate difference from base64-js: in the last incomplete group, values outside 0–255 are masked (base64-js emits the text `undefined`).
 
+### D41. Lean runs memory-capped — **Decided, pending review** (2026-11-07)
+- **Chosen:** on Linux with a systemd user session, ProofScript runs Lean in a scope of its own with `MemoryMax` = `PROOFSCRIPT_LEAN_MEMORY` (default 4096 MB, no swap), and passes `-M`/`-j` (Lean's own `-M` is not a hard limit). If the limit is hit, the build fails with a plain message. Elsewhere, only `-M`/`-j` apply. `PROOFSCRIPT_NO_CGROUP` turns the scope off.
+- **Why:** an automatic proof grew to 17 GB on 2026-11-07. Under Claude Desktop (`OOMPolicy=stop`), the kernel's OOM kill took down every session; on a user's machine it could take down their desktop session.
+- **Alternatives:** no cap (Lean's behaviour); a time limit only; macOS and Windows equivalents (not done).
+
+### D42. Uniqueness theorems only for bounded bodies — **Decided** (2026-11-07)
+- Recursive functions whose bodies are larger than 10,000 characters or 8 `let`s get no uniqueness theorem. Their termination stays a reported assumption in certificate results. Lean's automatic proof of uniqueness grew to over 17 GB on base64's decoding loop.
+
+### D43. Specification predicates — **Proposed, pending review** (2026-11-07)
+- A `boolean` function whose single-expression body uses `forall`/`exists` is a proposition in the logic and cannot be called from running code. See [09-specifications.md](09-specifications.md) for the alternatives (a `Spec` marker, indexed `every`, ghost code).
+
 Group C (D6–D16, surface syntax) stays **Default** until the syntax review at the end of M3 (D29).
