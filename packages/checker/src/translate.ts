@@ -225,6 +225,28 @@ export class Translator {
         }
       }
     }
+    // Specification predicates cannot run (in JavaScript they would return `true`): calls are
+    // allowed only in theorem statements and in other specification predicates.
+    for (const sf of files) {
+      const visit = (n: ts.Node, allowed: boolean): void => {
+        if (ts.isCallExpression(n)) {
+          const ps = this.ps(n.expression);
+          if (ps === "prove") {
+            n.arguments.forEach((a, i) => visit(a, allowed || i === 0));
+            return;
+          }
+          const callee = ts.isIdentifier(n.expression) ? fnLike(this.declOf(n.expression)) : undefined;
+          if (!allowed && callee !== undefined && this.specBody(callee) !== undefined) {
+            const d = this.diag(n, `${callee.name.text} is a specification predicate (it uses \`forall\`/\`exists\`): it can be used in specifications and theorems, but cannot run`);
+            if (!this.diagnostics.some((x) => x.file === d.file && x.line === d.line && x.message === d.message)) this.diagnostics.push(d);
+          }
+        }
+        const fl = ts.isFunctionDeclaration(n) ? fnLike(n) : undefined;
+        const spec = fl !== undefined && this.specBody(fl) !== undefined;
+        ts.forEachChild(n, (c) => visit(c, allowed || spec));
+      };
+      visit(sf, false);
+    }
     return { decls: this.ordered(), diagnostics: this.diagnostics, unverified: this.unverified };
   }
 
@@ -788,9 +810,60 @@ export class Translator {
 
   // ---- Functions -------------------------------------------------------------------------------
 
+  /**
+   * A specification predicate (D43): a boolean function whose body is one expression using
+   * `forall` or `exists`. It is a proposition in the logic and cannot run.
+   */
+  specBody(fn: FnLike): ts.Expression | undefined {
+    if (fn.body === undefined) return undefined;
+    const body = ts.isBlock(fn.body) ? (fn.body.statements.length === 1 && ts.isReturnStatement(fn.body.statements[0]!) ? fn.body.statements[0].expression : undefined) : fn.body;
+    if (body === undefined) return undefined;
+    let quantified = false;
+    const visit = (n: ts.Node): void => {
+      if (quantified) return;
+      if (ts.isCallExpression(n)) {
+        const ps = this.ps(n.expression);
+        if (ps === "forall" || ps === "exists") quantified = true;
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(body);
+    return quantified ? body : undefined;
+  }
+
+  #translateSpec(fn: FnLike, body: ts.Expression): GeneratedDecl {
+    const leanName = this.leanNameOf(fn.node);
+    const deps = new Set<string>();
+    const scope: Scope = { locals: new Map(), narrowed: new Map() };
+    const typeParams = new Map<ts.Symbol, string>();
+    const binders = this.typeParamBinders(fn.typeParameters, deps, typeParams);
+    for (const p of fn.parameters) {
+      if (!ts.isIdentifier(p.name) || p.type === undefined) return this.fail(p, "parameters of specification predicates need a plain name and a type");
+      const n = this.ident(p.name.text);
+      const sym = this.checker.getSymbolAtLocation(p.name);
+      if (sym !== undefined) scope.locals.set(sym, n);
+      binders.push(`(${n} : ${this.type(p.type, deps, typeParams, true)})`);
+    }
+    const savedRuntime = this.#runtime;
+    this.#runtime = false;
+    let text: string;
+    try {
+      text = this.expr(body, "prop", scope, deps);
+    } finally {
+      this.#runtime = savedRuntime;
+    }
+    deps.delete(leanName);
+    const source = `def ${leanName}${binders.map((b) => ` ${b}`).join("")} : Prop :=\n  ${indent(text, 2)}`;
+    const def: GeneratedDecl = { kind: "def", tsName: fn.name.text, leanName, node: fn.node, source, deps };
+    this.decls.set(fn.node, def);
+    return def;
+  }
+
   translateFunction(fn: FnLike): GeneratedDecl {
     const leanName = this.leanNameOf(fn.node);
     if (fn.body === undefined) return this.fail(fn.node, "functions used in the logic need a body");
+    const spec = this.specBody(fn);
+    if (spec !== undefined) return this.#translateSpec(fn, spec);
     let inferredBool = false;
     if (fn.type === undefined) {
       // An unannotated return type is accepted only when TypeScript infers `boolean`
@@ -968,7 +1041,8 @@ export class Translator {
         const pn = this.requireDecl(decl);
         deps.add(pn);
         const extra = args[1] === undefined ? [] : ts.isTupleTypeNode(args[1]) ? args[1].elements.map((e) => value(e as ts.TypeNode)) : this.fail(args[1], "expected a tuple of arguments");
-        return this.#inlinePredicate(decl, pn, [subject, ...extra], deps) ?? `${pn} ${subject}${extra.map((x) => ` ${x}`).join("")} = true`;
+        const isSpec = fnLike(decl) !== undefined && this.specBody(fnLike(decl)!) !== undefined;
+        return this.#inlinePredicate(decl, pn, [subject, ...extra], deps) ?? `${pn} ${subject}${extra.map((x) => ` ${x}`).join("")}${isSpec ? "" : " = true"}`;
       }
       case "Holds": {
         const pred = args[0];
@@ -979,7 +1053,8 @@ export class Translator {
         deps.add(pn);
         const xs = args[1] === undefined ? [] : ts.isTupleTypeNode(args[1]) ? args[1].elements.map((e) => value(e as ts.TypeNode)) : this.fail(args[1], "expected a tuple of arguments");
         void subject;
-        return `${pn}${xs.map((x) => ` ${x}`).join("")} = true`;
+        const isSpec = this.specBody(fnLike(decl)!) !== undefined;
+        return this.#inlinePredicate(decl, pn, xs, deps) ?? `${pn}${xs.map((x) => ` ${x}`).join("")}${isSpec ? "" : " = true"}`;
       }
       default:
         return undefined;
@@ -1112,7 +1187,9 @@ export class Translator {
     // Copies of the hypotheses in scope have no dependents, so simp can always unfold them.
     const copies = this.#scopeHyps.map((h) => `(try have := ${h})`).join(" <;> ");
     const copied = copies === "" ? "" : ` | ((try simp (config := { zetaDelta := true }) only []) <;> ${copies} <;> simp_all${set} <;> omega)`;
-    return `by first | omega | (simp_all${set} <;> omega) | (simp_all${set} <;> grind)${viaLemmas} | (simp_all (config := { zetaDelta := true })${set} <;> omega)${copied} | ((try simp (config := { zetaDelta := true }) only []) <;> (try clear_value *) <;> simp_all${set} <;> omega) | grind | decide`;
+    // Quantified facts about arrays after writes: split each read of a written array.
+    const arrays = ` | (intros; simp only [Array.getElem_set, Array.size_set] at *; repeat' split; all_goals (try subst_vars) <;> (try rfl) <;> (try (simp_all${set}; done)) <;> (try (simp_all${set} <;> omega)) <;> (try (apply_assumption <;> simp_all <;> omega)))`;
+    return `by first | omega | (simp_all${set} <;> omega) | (simp_all${set} <;> grind)${viaLemmas}${arrays} | (simp_all (config := { zetaDelta := true })${set} <;> omega)${copied} | ((try simp (config := { zetaDelta := true }) only []) <;> (try clear_value *) <;> simp_all${set} <;> omega) | grind | decide`;
   }
 
   /** Proof that an index is in bounds: Lean's tactic, then simplification that sees through `let`s. */
@@ -1145,6 +1222,8 @@ export class Translator {
     // preconditions), so the inlined body does not repeat them. It depends on that
     // definition, so it fails if they could not be proved.
     this.#guards = [];
+    const savedRuntime = this.#runtime;
+    this.#runtime = false;
     try {
       const text = this.expr(body, "prop", { locals, narrowed: new Map() }, local);
       if (local.has(leanName)) return undefined;
@@ -1159,6 +1238,7 @@ export class Translator {
       throw e;
     } finally {
       this.#guards = savedGuards;
+      this.#runtime = savedRuntime;
     }
   }
 
@@ -2454,6 +2534,12 @@ export class Translator {
     }
     if (!ts.isIdentifier(e.expression)) return this.fail(e.expression, "only calls to named functions are supported in the logic yet");
     if (this.modifyingCallee(e) !== undefined) return this.fail(e, "a call that modifies its arguments must be a statement of its own");
+    const callee = fnLike(this.declOf(e.expression));
+    if (callee !== undefined && this.specBody(callee) !== undefined) {
+      // A proposition: only in statements, never in code that runs (it would return `true`).
+      if (mode !== "prop" || this.#runtime) return this.fail(e, `${callee.name.text} is a specification predicate (it uses \`forall\`/\`exists\`): it can be used in specifications and theorems, but cannot run`);
+      return this.callText(e, scope, deps);
+    }
     return this.coerceProp(e, this.callText(e, scope, deps), mode);
   }
 

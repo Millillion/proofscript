@@ -173,3 +173,16 @@ test("examples/tutorial: every step of the tutorial verifies", { skip: !hasLean 
   assert.equal(r.theorems.length, 12);
   assert.ok(r.theorems.every((t) => t.status === "verified"));
 });
+
+test("good-spec: a quantified loop invariant (specification predicate) proves a whole-array postcondition", { skip: !hasLean }, () => {
+  const r = run("good-spec");
+  assert.deepEqual(r.diagnostics, []);
+  assert.equal(r.theorems.length, 2);
+  assert.ok(r.theorems.every((t) => t.status === "verified"));
+});
+
+test("bad-spec: a wrong quantified invariant fails; a specification predicate cannot run", { skip: !hasLean }, () => {
+  const r = run("bad-spec");
+  assert.ok(r.theorems.every((t) => t.status !== "verified"));
+  assert.ok(r.diagnostics.some((d) => /specification predicate .* cannot run/.test(d.message)));
+});

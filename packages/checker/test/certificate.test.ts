@@ -208,7 +208,7 @@ test("forged: a proof replaced by sorry is admitted, never verified", { skip: !h
 });
 
 test("every good fixture replays from its own certificate", { skip: !hasLean }, () => {
-  for (const name of ["good-loop", "good-mutation", "good-indexed", "good-string", "good-struct", "good-overflow"]) {
+  for (const name of ["good-loop", "good-mutation", "good-indexed", "good-string", "good-struct", "good-overflow", "good-spec"]) {
     const dir = copy(join(fixtures, name), `roundtrip-${name}`);
     const r1 = check(join(dir, "tsconfig.json"), { writeCertificate: join(dir, "proofscript.cert") });
     assert.ok(r1.theorems.every((t) => t.status === "verified"), name);
