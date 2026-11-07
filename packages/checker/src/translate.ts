@@ -206,7 +206,42 @@ export class Translator {
         }
       }
     }
+    // A function that calls one with preconditions is verified code too, so that the
+    // preconditions are proved at the call. If it cannot be translated, the call stays
+    // unchecked and is reported as such (not as an error: the caller is ordinary code).
+    for (const sf of files) {
+      for (const st of sf.statements) {
+        const decl = ts.isFunctionDeclaration(st) && st.name !== undefined ? st : undefined;
+        if (decl === undefined || this.decls.has(decl) || decl.body === undefined) continue;
+        const callee = this.#preconditionCallee(decl.body);
+        if (callee === undefined) continue;
+        try {
+          this.requireDecl(decl);
+        } catch (e) {
+          if (!(e instanceof TranslationError)) throw e;
+          this.decls.delete(decl);
+          const d = this.diag(callee.call, `call of ${callee.name} from a function outside the logic (${e.message}): its preconditions are not proved here`);
+          if (!this.unverified.some((x) => x.file === d.file && x.line === d.line && x.column === d.column)) this.unverified.push(d);
+        }
+      }
+    }
     return { decls: this.ordered(), diagnostics: this.diagnostics, unverified: this.unverified };
+  }
+
+  /** The first call in `body` of a function with preconditions. */
+  #preconditionCallee(body: ts.Node): { call: ts.CallExpression; name: string } | undefined {
+    let found: { call: ts.CallExpression; name: string } | undefined;
+    const visit = (n: ts.Node): void => {
+      if (found !== undefined) return;
+      if (ts.isCallExpression(n)) {
+        const d = this.declOf(n.expression);
+        const fl = d === undefined || !this.isUserDecl(d) ? undefined : ts.isFunctionDeclaration(d) ? d : undefined;
+        if (fl !== undefined && fl.name !== undefined && this.hasPreconditions(fl.parameters)) found = { call: n, name: fl.name.text };
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(body);
+    return found;
   }
 
   #guard(f: () => void): void {

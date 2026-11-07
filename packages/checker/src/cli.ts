@@ -1,25 +1,33 @@
-// `proofscript check [--write-certificate [file]] [--certificate [file]] [tsconfig.json | files…]`
+// `proofscript check|audit [options] [tsconfig.json | files…]`
 
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
+import { audit, auditJson, formatAudit } from "./audit.ts";
 import { checkWithCertificate } from "./certificate.ts";
 import { type CheckResult, check, formatResult } from "./check.ts";
 import { leanAvailable } from "./lean.ts";
 import { loadProject } from "./project.ts";
 
 const USAGE = `usage: proofscript check [options] [tsconfig.json | files…]
+       proofscript audit [options] [tsconfig.json | files…]
+
+  check: prove every theorem and verified function, and report the results.
+  audit: check, then report what the results rest on: axioms, trusted translations,
+         assumptions, and calls from unverified code whose preconditions nothing proves.
 
   --write-certificate [file]  prove with Lean and save a certificate (default: proofscript.cert)
-  --certificate [file]        check against a certificate, without Lean (default: proofscript.cert)`;
+  --certificate [file]        check against a certificate, without Lean (default: proofscript.cert)
+  --json                      (audit) print the audit as JSON`;
 
 function main(): number {
   const [cmd, ...rest] = process.argv.slice(2);
-  if (cmd !== "check") {
+  if (cmd !== "check" && cmd !== "audit") {
     console.error(USAGE);
     return 2;
   }
   let write: string | true | undefined;
   let replay: string | true | undefined;
+  let json = false;
   const targets: string[] = [];
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i]!;
@@ -28,6 +36,8 @@ function main(): number {
       const file = next !== undefined && next.endsWith(".cert") ? (i++, next) : true;
       if (a === "--certificate") replay = file;
       else write = file;
+    } else if (a === "--json" && cmd === "audit") {
+      json = true;
     } else if (a.startsWith("-")) {
       console.error(`unknown option ${a}\n${USAGE}`);
       return 2;
@@ -63,8 +73,11 @@ function main(): number {
     }
     result = check(target, write === undefined ? {} : { writeCertificate: certPath(write) });
   }
-  console.log(formatResult(result, root));
-  if (write !== undefined) console.log(`certificate written to ${certPath(write)}`);
+  if (cmd === "audit") {
+    const a = audit(loadProject(target), result, replay !== undefined ? "certificate" : "lean");
+    console.log(json ? auditJson(a, root) : formatAudit(a, root));
+  } else console.log(formatResult(result, root));
+  if (write !== undefined && !json) console.log(`certificate written to ${certPath(write)}`);
   const ok = result.diagnostics.length === 0 && result.theorems.every((t) => t.status === "verified");
   return ok ? 0 : 1;
 }

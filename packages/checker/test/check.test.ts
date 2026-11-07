@@ -155,3 +155,14 @@ test("examples/math: the whole library verifies", { skip: !hasLean }, () => {
   assert.ok(r.theorems.length >= 28, `expected the library's theorems, got ${r.theorems.length}`);
   assert.ok(r.theorems.every((t) => t.status === "verified"));
 });
+
+test("bad-caller: a function without a spec that calls one with preconditions is checked", { skip: !hasLean }, () => {
+  const r = run("bad-caller");
+  assert.ok(r.diagnostics.some((d) => /precondition may not hold at a call in bad/.test(d.message)));
+});
+
+test("boundary: callers outside the logic are reported, never silently trusted", { skip: !hasLean }, () => {
+  const r = run("boundary");
+  assert.deepEqual(r.diagnostics, []);
+  assert.ok(r.unverified.some((u) => /call of pred from a function outside the logic/.test(u.message)));
+});

@@ -347,7 +347,7 @@ export function checkWithCertificate(project: Project, certPath: string): CheckR
     }
     const assumptions = new Set(leanDefs.flatMap((d) => defAssumptions.get(d) ?? []));
     const rec = leanDefs.filter((d) => binder.recursive.has(d)).map((d) => defNames.get(d)!);
-    if (rec.length > 0) assumptions.add(`${[...new Set(rec)].sort().join(", ")} terminate${rec.length === 1 ? "s" : ""} (proved by Lean when the certificate was made)`);
+    for (const f of rec) assumptions.add(`${f} terminates (proved by Lean when the certificate was made)`);
     return { ...base(t), status: axioms.includes("sorry") ? "admitted" : "verified", axioms, reflected, assumptions: [...assumptions].sort() };
   });
   return { diagnostics, unverified, theorems: results, declarationsChecked: count };
