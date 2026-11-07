@@ -210,4 +210,35 @@ When a decision changes, update its entry and note the date rather than deleting
 - **Known limit:** termination of recursive functions is not re-established (an equation pins a function down only if its recursion terminates). It is listed as an assumption of each result. Closing it needs decreasing-measure obligations as further bound theorems.
 - **Alternatives:** source hashes only (stale-proof detection, no tamper resistance); re-elaborating with Lean in WebAssembly (D31; the long-term route, and then certificates become a pure cache).
 
+### D34. Callers of functions with preconditions are verified code — **Decided, pending review** (2026-11-06)
+- **Chosen:** a function without a spec of its own becomes verified code when it calls a function with preconditions, so the preconditions are proved at the call. If it cannot be translated, the call is reported as unverified (a warning), not as an error.
+- **Why:** otherwise a precondition is silently unchecked whenever the caller has no spec (found by the first audit, in `examples/math`).
+- **Alternatives:** require an explicit spec on every caller (noisier); treat untranslatable callers as errors (stricter, but breaks ordinary code that calls verified code); report only in `audit` (the 0.0.6 behaviour).
+
+### D35. Bit operations in the logic — **Decided, pending review** (2026-11-07)
+- **Chosen:** `x & (2^k − 1)` (k ≤ 31) on any safe integer is `x mod 2^k`; `>>`, `>>>`, `<<` by constants on `nat`, with range obligations (x < 2³¹, < 2³², result < 2³¹). `|`, `^`, `~` and other masks are not in the logic yet.
+- **Alternatives:** model all of ToInt32 (complete, but proofs about wrapped arithmetic are much harder); `BitVec 32` semantics (exact, but omega support is weaker).
+
+### D36. Predicates in refinements are stated by their bodies — **Decided, pending review** (2026-11-07)
+- **Chosen:** `Is<typeof p, …>` with a single-expression, precondition-free predicate `p` is translated to `p`'s body (`i % 3 = 0`), not to `p i = true`. Not for bodies with field access (`match`).
+- **Why:** automatic proofs (omega) see the facts without unfolding; unfolding is blocked by Lean in common situations.
+- **Cost:** goals shown in errors are the expanded form. The trust footprint names `p` only through its definition's dependencies.
+
+### D37. Modular automation: callees are used through their postconditions — **Decided, pending review** (2026-11-07)
+- **Chosen:** in automatic proofs, a callee with proved postconditions is not unfolded; its postconditions are lemmas (and facts after `const x = f(…)`). A callee without postconditions is unfolded.
+- **Why:** scales, and is what users expect from contracts (Dafny, Verus work this way).
+- **Cost:** a proof that needs a callee's definition beyond its contract fails, and the fix is to strengthen the contract. This makes contracts part of the API.
+- **Alternatives:** always unfold (the 0.0.7 behaviour; non-modular, simp loops); an opt-in `@opaque`/`@transparent` marker (more syntax).
+
+### D38. Facts about every JavaScript value — **Decided** (2026-11-07)
+- Arrays have fewer than 2³² elements, and strings at most 2⁵³ − 1 code units (both ECMAScript guarantees), available where proofs need them. Not assumptions: guarantees of the language.
+
+### D39. One npm package, `proofscript` — **Decided, pending review** (2026-11-07)
+- **Chosen:** a single published package contains the type surface (what user code imports), the checker, the kernel and the `proofscript` command, built to JavaScript by `scripts/build-npm.ts`. Its only dependency is the TypeScript 6 compiler API (`typescript6` → `typescript@^6.0.3`, about 25 MB installed).
+- **Alternatives:** separate `proofscript` (runtime types, tiny) and `@proofscript/cli` packages, so applications that only import the types don't install the compiler; a bundled single file.
+- **Trade-off to review:** user projects get the TypeScript compiler as a transitive dependency of a package they import at runtime.
+
+### D40. examples/base64 architecture — **Decided** (2026-11-07)
+- A verified core writes into caller-allocated buffers (no string building, which in V8 would cost gigabytes on large inputs); a thin unverified wrapper allocates and converts. Deliberate difference from base64-js: in the last incomplete group, values outside 0–255 are masked (base64-js emits the text `undefined`).
+
 Group C (D6–D16, surface syntax) stays **Default** until the syntax review at the end of M3 (D29).
