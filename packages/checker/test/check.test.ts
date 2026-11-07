@@ -46,7 +46,7 @@ test("bad-number: floating-point arithmetic is not treated as integer arithmetic
   assert.ok(r.diagnostics.some((d) => /IEEE-754/.test(d.message)));
 });
 
-test("bad-identity: `===` on objects is not structural equality", () => {
+test("bad-identity: `===` on objects is not structural equality", { skip: !hasLean }, () => {
   const r = run("bad-identity");
   assert.equal(r.theorems.length, 0);
   assert.ok(r.diagnostics.some((d) => /compares identity/.test(d.message)));

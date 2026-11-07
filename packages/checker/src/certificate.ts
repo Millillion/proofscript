@@ -107,8 +107,11 @@ export function equationDecl(def: GeneratedDecl): GeneratedDecl | undefined {
   const bs = parts.binders.map(plainBinder);
   const args = bs.filter((b) => b.explicit).flatMap((b) => b.names);
   const f = def.leanName;
+  // Callee facts (`have _ : P := (g.post_0 x)`) are proofs; in a theorem's statement Lean
+  // cannot elaborate them, and they carry no meaning, so the equation leaves them out.
+  const body = parts.body.replace(/^[ \t]*have _ : [^\n]*:= \(PS\.\S+\.post_\d+[^()\n]*\)\n/gm, "");
   const source =
-    `theorem ${f}.ps_eqn${bs.map((b) => ` ${b.text}`).join("")} :\n    ${f}${args.map((a) => ` ${a}`).join("")} = (\n${parts.body}) :=\n` +
+    `theorem ${f}.ps_eqn${bs.map((b) => ` ${b.text}`).join("")} :\n    ${f}${args.map((a) => ` ${a}`).join("")} = (\n${body}) :=\n` +
     `  by first | (rw [${f}]; done) | (rw [${f}.eq_def]; done) | rfl`;
   return { kind: "theorem", aux: "eqn", tsName: `${def.tsName} (equation)`, leanName: `${f}.ps_eqn`, node: def.node, source, deps: new Set([f, ...def.deps]) };
 }
@@ -228,8 +231,12 @@ class Binder {
       const e = this.#elaborator().signature(eqn.decl);
       const re = this.#sameType(`${n}.ps_eqn`, e, "theorem");
       if (re !== true) return re;
+      // Recursive if the body (the equation's right side) mentions the function.
+      let body: Expr = e;
+      while (body.kind === "pi") body = body.body;
+      const rhs = body.kind === "app" ? body.arg : body;
       const self = new Set<Name>();
-      constantsOf([e], self);
+      constantsOf([rhs], self);
       if (self.has(kname(n))) this.recursive.add(n);
       used.push(t, e);
     } else {

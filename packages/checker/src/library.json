@@ -625,6 +625,13 @@
   "Int.subNatNat": {
    "hash": "5442a72ec9437cfc03dc7dcd1fc7e0f6"
   },
+  "Int.toNat": {
+   "hash": "412e2bfc13e743ec83325059a3a25a0f",
+   "binders": "d"
+  },
+  "Int.toNat.match_1": {
+   "hash": "1ca98d62bc3b1da09bea32d178aee605"
+  },
   "InvImage": {
    "hash": "5f5e7c94f26e0ad720e058799db4a36b"
   },
@@ -1061,6 +1068,10 @@
   },
   "Nat.succ": {
    "hash": "48f8a9a12ad40849fd83d6658ca3a1c2"
+  },
+  "Nat.toUInt16": {
+   "hash": "3dc24f0b513934e0974d6eae3a143aea",
+   "binders": "d"
   },
   "Nat.zero": {
    "hash": "6780d778b599dde7e6fe182cb049eb74"

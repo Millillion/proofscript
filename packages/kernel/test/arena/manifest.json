@@ -1,0 +1,897 @@
+[
+ {
+  "file": "bugs__closure-level-subst.ndjson.gz",
+  "test": "bugs/closure-level-subst",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__constlevels.ndjson.gz",
+  "test": "bugs/constlevels",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__ctor-num-fields.ndjson.gz",
+  "test": "bugs/ctor-num-fields",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__eta-ctor-alias.ndjson.gz",
+  "test": "bugs/eta-ctor-alias",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__forged-quot-ind.ndjson.gz",
+  "test": "bugs/forged-quot-ind",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__k-rec-conv.ndjson.gz",
+  "test": "bugs/k-rec-conv",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__large-elim-param.ndjson.gz",
+  "test": "bugs/large-elim-param",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__large-elim-prop-bool.ndjson.gz",
+  "test": "bugs/large-elim-prop-bool",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__level-imax-leq.ndjson.gz",
+  "test": "bugs/level-imax-leq",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__level-imax-normalization.ndjson.gz",
+  "test": "bugs/level-imax-normalization",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__loose-bvar-value.ndjson.gz",
+  "test": "bugs/loose-bvar-value",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__nat-rec-k-lie.ndjson.gz",
+  "test": "bugs/nat-rec-k-lie",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__nat-rec-rules.ndjson.gz",
+  "test": "bugs/nat-rec-rules",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__nested-name-capture.ndjson.gz",
+  "test": "bugs/nested-name-capture",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__nested-rec-rule-nfields.ndjson.gz",
+  "test": "bugs/nested-rec-rule-nfields",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__nested-unused-param.ndjson.gz",
+  "test": "bugs/nested-unused-param",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__orphan-rec.ndjson.gz",
+  "test": "bugs/orphan-rec",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__pi-closure-context.ndjson.gz",
+  "test": "bugs/pi-closure-context",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__proj-non-structure.ndjson.gz",
+  "test": "bugs/proj-non-structure",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__proj-of-imax-prop.ndjson.gz",
+  "test": "bugs/proj-of-imax-prop",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__proj-of-stuck-prop.ndjson.gz",
+  "test": "bugs/proj-of-stuck-prop",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__proj-of-subst-prop.ndjson.gz",
+  "test": "bugs/proj-of-subst-prop",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__rec-k-lie.ndjson.gz",
+  "test": "bugs/rec-k-lie",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__rec-missing-ih.ndjson.gz",
+  "test": "bugs/rec-missing-ih",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__rec-of-subst-prop.ndjson.gz",
+  "test": "bugs/rec-of-subst-prop",
+  "expected": "reject"
+ },
+ {
+  "file": "bugs__unit-rec-rule.ndjson.gz",
+  "test": "bugs/unit-rec-rule",
+  "expected": "reject"
+ },
+ {
+  "file": "corner-cases__proof-param-ok.ndjson.gz",
+  "test": "corner-cases/proof-param-ok",
+  "expected": "accept"
+ },
+ {
+  "file": "other__extra-rec.ndjson.gz",
+  "test": "other/extra-rec",
+  "expected": "reject"
+ },
+ {
+  "file": "other__inductive-undeclared-universe.ndjson.gz",
+  "test": "other/inductive-undeclared-universe",
+  "expected": "reject"
+ },
+ {
+  "file": "other__level-index-out-of-order.ndjson.gz",
+  "test": "other/level-index-out-of-order",
+  "expected": "accept"
+ },
+ {
+  "file": "other__nat-lit-add-bad.ndjson.gz",
+  "test": "other/nat-lit-add-bad",
+  "expected": "reject"
+ },
+ {
+  "file": "other__nat-lit-add.ndjson.gz",
+  "test": "other/nat-lit-add",
+  "expected": "accept"
+ },
+ {
+  "file": "other__nat-lit-ble.ndjson.gz",
+  "test": "other/nat-lit-ble",
+  "expected": "accept"
+ },
+ {
+  "file": "other__nat-lit-sub.ndjson.gz",
+  "test": "other/nat-lit-sub",
+  "expected": "accept"
+ },
+ {
+  "file": "other__orphan-ctor.ndjson.gz",
+  "test": "other/orphan-ctor",
+  "expected": "reject"
+ },
+ {
+  "file": "other__proj-of-prop.ndjson.gz",
+  "test": "other/proj-of-prop",
+  "expected": "reject"
+ },
+ {
+  "file": "other__sparse-name-index.ndjson.gz",
+  "test": "other/sparse-name-index",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__bad__002_badDef.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__009_forallSortBad.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__010_nonTypeType.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__011_nonTypeAxiom.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__012_nonPropThm.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__014_selfProof.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__019_tut06_bad01.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__046_inductBadNonSort.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__047_inductBadNonSort2.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__048_inductLevelParam.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__049_inductTooFewParams.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__050_inductWrongCtorParams.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__051_inductWrongCtorResParams.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__052_inductWrongCtorResLevel.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__053_inductInIndex.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__054_indNeg.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__056_reduceCtorType.mk.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__057_indNegReducible.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__061_typeWithTooHighTypeField.mk.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__073_BogusRecursor.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__087_projOutOfRange.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__088_projNotStruct.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__090_projProp2.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__092_projProp4.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__093_projProp5.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__094_projProp6.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__096_projIndexData.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__097_projIndexData2.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__100_ruleKbad.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__101_ruleKAcc.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__105_proofIrrelevanceBad.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__111_indexedUnitEta.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__113_indexedStructEta.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__116_funEtaBad.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__117_reflOccLeft.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__118_reflOccInIndex.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__125_accRecNoEta.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__132_dup_defs.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__133_dup_ind_def.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__134_dup_ctor_def.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__135_dup_rec_def.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__136_misnamed_rec_user.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__137_dup_rec_def2.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__138_dup_ctor_rec.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__139_DupConCon.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__140_falseFromUnsafe.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__bad__141_falseFromPartial.ndjson.gz",
+  "test": "tutorial",
+  "expected": "reject"
+ },
+ {
+  "file": "tutorial__good__001_basicDef.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__003_arrowType.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__004_dependentType.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__005_constType.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__006_betaReduction.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__007_betaReduction2.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__008_forallSortWhnf.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__013_thmProof.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__015_levelComp1.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__016_levelComp2.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__017_levelComp3.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__018_levelParams.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__020_levelComp4.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__021_levelComp5.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__022_imax1.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__023_imax2.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__024_levelMaxComm.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__025_levelMaxAssoc.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__026_levelMaxIdem.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__027_levelMaxAbsorb.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__028_inferVar.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__029_defEqLambda.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__030_peano1.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__031_peano2.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__032_peano3.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__033_letType.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__034_letTypeDep.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__035_letRed.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__036_empty.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__037_boolType.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__038_twoBool.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__039_andType.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__040_prodType.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__041_pprodType.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__042_pUnitType.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__043_eqType.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__044_natDef.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__045_rbTreeDef.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__055_reduceCtorParam.mk.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__058_predWithTypeField.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__059_typeWithTypeField.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__060_typeWithTypeFieldPoly.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__062_emptyRec.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__063_boolRec.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__064_twoBoolRec.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__065_andRec.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__066_prodRec.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__067_pprodRec.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__068_punitRec.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__069_eqRec.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__070_nRec.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__071_rbTreeRef.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__072_boolPropRec.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__074_existsRec.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__075_typeSingletonRecReduction.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__076_sortElimPropRec.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__077_sortElimProp2Rec.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__078_boolRecEqns.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__079_prodRecEqns.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__080_nRecReduction.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__081_listRecReduction.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__082_RBTree.id_spec.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__083_And.right.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__084_Prod.snd.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__085_PProd.snd.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__086_PSigma.snd.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__089_projProp1.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__091_projProp3.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__095_projDataIndexRec.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__098_projRed.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__099_ruleK.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__102_aNatLit.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__103_natLitEq.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__104_proofIrrelevance.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__106_proofIrrelevanceWhnf.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__107_proofIrrelevanceUnderBinder.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__108_unitEta1.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__109_unitEta2.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__110_unitEta3.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__112_structEta.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__114_funEta.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__115_funEtaDep.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__119_reduceCtorParamRefl.mk.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__120_reduceCtorParamRefl2.mk.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__121_rTreeRec.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__122_rtreeRecReduction.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__123_accRecType.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__124_accRecReduction.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__126_quotMkType.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__127_quotIndType.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__128_quotLiftType.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__129_quotSoundType.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__130_quotLiftReduction.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "tutorial__good__131_quotIndReduction.ndjson.gz",
+  "test": "tutorial",
+  "expected": "accept"
+ },
+ {
+  "file": "init-prelude.ndjson.gz",
+  "test": "init-prelude",
+  "expected": "accept"
+ }
+]

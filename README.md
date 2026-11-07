@@ -24,7 +24,7 @@ export function pred(n: nat & Ge<1>): nat & Lt<typeof n> {
 ```
 
 - **Start here:** the [tutorial](docs/tutorial.md) and the [reference](docs/reference.md).
-- **Examples:** [`examples/tutorial`](examples/tutorial), [`examples/math`](examples/math) (lists, insertion sort, inductive propositions, value-indexed vectors).
+- **Examples:** [`examples/tutorial`](examples/tutorial); [`examples/math`](examples/math) (lists, insertion sort, inductive propositions, value-indexed vectors); [`examples/base64`](examples/base64), a verified drop-in replacement for base64-js that passes its test suite.
 - **How it works:** TypeScript is translated to Lean, Lean proves (untrusted), and ProofScript's own kernel checks every proof. [Certificates](docs/certificates.md) let CI check proofs without Lean, and `proofscript audit` reports what each result rests on.
 - **Evidence:** [status](docs/status.md). The kernel passes the Lean Kernel Arena (235 passed, 0 failed, 3 declined), and is differentially fuzzed against Lean's.
 

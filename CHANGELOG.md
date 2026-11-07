@@ -2,6 +2,47 @@
 
 ProofScript ships patch releases (0.0.x) until the 0.1.0 MVP. See [docs/v0.1.md](docs/v0.1.md).
 
+## 0.0.8 (2026-11-07)
+
+- **`examples/base64`:** a verified drop-in replacement for base64-js 1.5.1 (`byteLength`, `toByteArray`, `fromByteArray`).
+  - **Proved:**
+    - every access is in bounds and every write lands in the output buffer;
+    - no arithmetic overflows;
+    - encoded units are alphabet characters and decoded values are bytes;
+    - every sextet survives the alphabet (`decode_encode_unit`);
+    - the sextets of any group of three, two or one bytes decode back to those bytes;
+    - the encoder never emits `=`.
+
+    In total, 18 theorems.
+  - **Not yet one theorem:** the whole-array round trip `toByteArray(fromByteArray(x)) = x`, which composes these facts.
+  - **Tested:** base64-js's own test suite passes unmodified, 57/57, including its 64 MB round trip. A differential test against base64-js covers 27,000 random inputs, with identical results and errors.
+- **Language:**
+  - `%` on `nat`.
+  - Masks `x & (2^k − 1)`, exact for any safe integer, as in JavaScript.
+  - Shifts `>>`, `>>>` and `<<` by constants, with their range obligations.
+  - `String.fromCharCode`.
+  - Strings carry the ECMAScript length bound (at most 2⁵³ − 1) where loops need it.
+- **Automation (modular reasoning):**
+  - After `const x = f(…)`, `f`'s proved postconditions are facts about `x`.
+  - Callees with postconditions are reasoned about through them, not unfolded, and their lemmas are given to `grind`.
+  - A predicate whose body is one expression is stated by its body (`i % 3 === 0`, not `multipleOf3 i = true`), so `omega` sees it directly.
+  - Side conditions copy hypotheses that `let` values depend on, so `simp` can still use them.
+  - Guards of `if` conditions are proved before the `if`.
+  - Loop invariant tactics see what the loop body uses.
+- **Fixes:**
+  - a reserved word with a suffix produced invalid Lean (`«end»_7`);
+  - loops inside functions with `Modifies` crashed;
+  - `Le<typeof s.length>` on strings;
+  - side-condition counts leaked between functions;
+  - a non-recursive function was listed as needing termination in certificate results.
+- **Lean Kernel Arena subset in the tests:** 179 arena tests (all recorded soundness bugs, the tutorial, the decidable corner cases, Init.Prelude) are packed in `packages/kernel/test/arena` and run without Lean in about a second.
+- **npm package build:** `node scripts/build-npm.ts` builds the `proofscript` package as JavaScript, with the checker, the kernel and the `proofscript` command. Installed from its tarball into a fresh project, `npx proofscript check --certificate` verifies the tutorial. Publishing waits for 0.1.0.
+- **CI:**
+  - Without Lean: all tests, the arena subset, every example from its certificate, and the npm package in a fresh project.
+  - With Lean (elan installed in CI): everything proved from scratch.
+  - CI had been failing since 0.0.6 on a test that needed Lean.
+- 65/65 tests pass.
+
 ## 0.0.7 (2026-11-06)
 
 - **`proofscript audit`:** what a project's results rest on. It collects, over the whole project, each axiom, trusted translation and assumption, with the theorems that depend on it. It also reports the **boundary** (exported functions with preconditions, and calls from unverified code that nothing proves) and the trusted base. `--json` prints it for tools; it works with Lean or from a certificate.

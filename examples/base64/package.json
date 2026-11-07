@@ -1,0 +1,15 @@
+{
+  "name": "@proofscript/example-base64",
+  "version": "0.0.8",
+  "private": true,
+  "type": "module",
+  "description": "A verified drop-in replacement for base64-js, written in ProofScript",
+  "main": "./src/index.ts",
+  "scripts": {
+    "test": "tape test/*.cjs"
+  },
+  "devDependencies": {
+    "base64-js": "^1.5.1",
+    "tape": "^4.17.0"
+  }
+}

@@ -1,6 +1,6 @@
 # ProofScript reference
 
-Version 0.0.7. The syntax is provisional until the syntax review (D29) before 0.1.0.
+Version 0.0.8. The syntax is provisional until the syntax review (D29) before 0.1.0.
 
 Everything ProofScript adds is exported by the `proofscript` package: types (which mean little or nothing to `tsc`) and a few runtime functions for theorems. The checker recognizes them by symbol, so they must be imported from `proofscript`; a local type named `Lt` is not ProofScript's `Lt`.
 
@@ -15,7 +15,12 @@ Everything ProofScript adds is exported by the `proofscript` package: types (whi
 | `number` | `number` | Not in the logic: IEEE-754 floating point is not integer arithmetic. |
 
 - **Subtraction on `nat` and `Nat`** must be proved not to go below zero. The proof comes from the context: a branch condition, a precondition, an invariant.
-- **`Math.floor(a / b)`** on `nat` is floor division (`b > 0` proved).
+- **`Math.floor(a / b)`** on `nat` is floor division (`b > 0` proved). **`a % b`** on `nat` is the remainder (`b > 0` proved).
+- **Bit operations** keep JavaScript's meaning:
+  - `x & (2^k − 1)`, such as `x & 0xFF`, is `x mod 2^k` for any safe integer (JavaScript wraps to 32 bits first).
+  - `x >> k` and `x >>> k` on `nat` are division by 2^k (with `x` below 2³¹ or 2³² proved).
+  - `x << k` on `nat` is multiplication by 2^k (with the result below 2³¹ proved).
+  - Other masks, and `|` and `^`, are not in the logic yet.
 - **Arithmetic in theorems and specifications is exact.** The 2⁵³ limit applies to code that runs (D32).
 - **Counting** (`1 + length(tail)`, and sums of up to 64 counts) is exempt from the overflow check, under the assumption `recursion depth below 2^30`, which results report.
 
@@ -31,6 +36,8 @@ A refinement is an intersection `T & R`. To `tsc`, every `R` below is `unknown`,
 | `Holds<typeof p, [a, b]>` | `p(a, b)` holds (no subject; for `void` functions and relations) |
 
 `N` can be a literal (`Lt<10>`) or `typeof y`, the value of another parameter (`Lt<typeof n>`, `Lt<typeof a.length>`).
+
+A predicate in `Is` or `Holds` whose body is a single expression (and that has no preconditions) is used by its body: `Is<typeof multipleOf3>` states `i % 3 === 0` itself. Arithmetic proofs then see the facts directly.
 
 Where a refinement appears decides what it means:
 
@@ -146,7 +153,9 @@ A function used in the logic is translated to a definition that has JavaScript's
 - **Statements:** `const` and `let`, assignment, `if`, `switch` on a tag, `return`, `while` and `for` (with invariants and a measure), `break` and `continue`.
 - **Expressions:** arithmetic (`+ - *` on integers, `Math.floor(a / b)`), comparisons, `&& || !`, `?:`, calls, recursion, object and array literals.
 - **Data:** field access, `a[i]`, `a.length`, `a.push(v)`, `a[i] = v`, `o.f = v`.
-- **Array and string methods:** `includes`, `every`, `some`; `s.length`, `s.charCodeAt(i)`, `startsWith`, `endsWith`, and `+` on strings.
+- **Array and string methods:** `includes`, `every`, `some`; `s.length`, `s.charCodeAt(i)`, `String.fromCharCode(c)` (with `c` below 2¹⁶ proved), `startsWith`, `endsWith`, and `+` on strings.
+
+**Facts every proof may use:** an array has fewer than 2³² elements, and a string has at most 2⁵³ − 1 code units (ECMAScript guarantees both). After `const x = f(…)`, `f`'s proved postconditions hold of `x`.
 
 **Not yet:**
 

@@ -102,7 +102,7 @@ export const VOCABULARY: readonly string[] = [
     ...["OfNat.ofNat", "HAdd.hAdd", "HSub.hSub", "HMul.hMul", "HDiv.hDiv", "HMod.hMod", "HAppend.hAppend", "Neg.neg"],
     ...["LT.lt", "LE.le", "GT.gt", "GE.ge", "BEq.beq", "bne", "Bool.and", "Bool.or", "Bool.not"],
     ...["GetElem.getElem", "List.cons", "List.nil", "List.toArray", "List.length", "List.isPrefixOf", "List.isSuffixOf"],
-    ...["Array.size", "Array.push", "Array.set", "Array.contains", "Array.all", "Array.any", "UInt16.toNat", "Prod.fst", "Prod.snd", "Prod.rec"],
+    ...["Array.size", "Array.push", "Array.set", "Array.contains", "Array.all", "Array.any", "UInt16.toNat", "Nat.toUInt16", "Int.toNat", "Prod.fst", "Prod.snd", "Prod.rec"],
     ...["Decidable", "OfNat", "HAdd", "HSub", "HMul", "HDiv", "HMod", "HAppend", "Add", "Sub", "Mul", "Div", "Mod", "Neg", "LT", "LE"],
     ...["Append", "BEq", "DecidableEq", "GetElem", "propext", "Quot.sound", "Classical.choice", "sorryAx"],
   ]),

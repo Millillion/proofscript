@@ -212,7 +212,7 @@ export class Translator {
     for (const sf of files) {
       for (const st of sf.statements) {
         const decl = ts.isFunctionDeclaration(st) && st.name !== undefined ? st : undefined;
-        if (decl === undefined || this.decls.has(decl) || decl.body === undefined) continue;
+        if (decl === undefined || this.decls.has(decl) || decl.body === undefined || this.isTheorem(decl)) continue;
         const callee = this.#preconditionCallee(decl.body);
         if (callee === undefined) continue;
         try {
@@ -386,7 +386,9 @@ export class Translator {
   }
 
   freshVar(base: string): string {
-    return `${this.ident(base)}_${++this.#fresh}`;
+    // `end` is quoted as `«end»`, but `end_7` needs no quotes (and `«end»_7` is not a name).
+    const id = this.ident(base);
+    return `${id.startsWith("«") ? id.slice(1, -1) : id}_${++this.#fresh}`;
   }
 
   // ---- Declarations ----------------------------------------------------------------------
@@ -833,6 +835,10 @@ export class Translator {
     });
     // Proof arguments come after all value parameters, so calls stay positional.
     binders.push(...hypBinders);
+    const savedHyps = this.#scopeHyps;
+    const savedPasses = this.#passesStringFacts;
+    this.#passesStringFacts = false;
+    this.#scopeHyps = hypBinders.map((b) => /^\((\S+) :/.exec(b)?.[1]).filter((n): n is string => n !== undefined);
     const value = inferredBool ? "Bool" : this.type(fn.type!, deps, typeParams, true);
     // `Modifies<typeof a>`: the function also returns the new value of each modified argument.
     const mods = this.modifiedParams(fn);
@@ -843,7 +849,8 @@ export class Translator {
     const ret = mods.length === 0 ? value : `(${value} × ${mods.map((m) => types.get(m)!).join(" × ")})`;
     const oldKeys = new Map<ts.Symbol, ts.Symbol>();
     for (const m of mods) {
-      const k = { name: `${m.getName()}_old` } as unknown as ts.Symbol;
+      const oldName = `${m.getName()}_old`;
+      const k = { name: oldName, getName: () => oldName } as unknown as ts.Symbol;
       oldKeys.set(m, k);
       scope.locals.set(k, scope.locals.get(m)!);
       types.set(k, types.get(m)!);
@@ -872,14 +879,21 @@ export class Translator {
       }
       if (mods.length > 0 && isExported(fn.node)) this.#assumptions.add("callers do not alias modified arguments");
       // The "length < 2^32" facts on array parameters only serve overflow checks.
-      if (this.#guardCount === guardsBefore) {
-        for (let k = binders.length - 1; k >= 0; k--) if (binders[k]!.startsWith("(size_")) binders.splice(k, 1);
+      // Strings' facts serve counters in loops over them; elsewhere they would only burden callers.
+      const loops = body.includes(".loop_") || this.#passesStringFacts;
+      for (let k = binders.length - 1; k >= 0; k--) {
+        const b = binders[k]!;
+        if (b.startsWith("(size_") && (this.#guardCount === guardsBefore || (b.includes(".length ≤") && !loops))) binders.splice(k, 1);
       }
       assumptions = [...this.#assumptions];
       if (this.#onlyCounting && ret === "Nat") this.#countingFns.add(leanName);
     } finally {
       this.#onlyCounting = savedOnly;
       [this.#currentFunction, this.#currentTypeParams, this.#currentTypeBinders, this.#runtime, this.#assumptions] = saved;
+      // A callee translated on the way does not make this function's caller guarded.
+      this.#guardCount = guardsBefore;
+      this.#scopeHyps = savedHyps;
+      this.#passesStringFacts = savedPasses;
     }
     const recursive = deps.has(leanName);
     deps.delete(leanName);
@@ -927,7 +941,7 @@ export class Translator {
       }
       if (ts.isTypeQueryNode(t) && ts.isIdentifier(t.exprName)) return this.local(t.exprName, scope);
       if (ts.isTypeQueryNode(t) && ts.isQualifiedName(t.exprName) && t.exprName.right.text === "length" && ts.isIdentifier(t.exprName.left)) {
-        return `(${this.local(t.exprName.left, scope)}).size`;
+        return `(${this.local(t.exprName.left, scope)}).${this.isStringExpr(t.exprName.left) ? "length" : "size"}`;
       }
       if (ts.isLiteralTypeNode(t) && ts.isNumericLiteral(t.literal)) return t.literal.text;
       if (ts.isLiteralTypeNode(t) && ts.isPrefixUnaryExpression(t.literal) && t.literal.operator === ts.SyntaxKind.MinusToken && ts.isNumericLiteral(t.literal.operand)) {
@@ -954,7 +968,7 @@ export class Translator {
         const pn = this.requireDecl(decl);
         deps.add(pn);
         const extra = args[1] === undefined ? [] : ts.isTupleTypeNode(args[1]) ? args[1].elements.map((e) => value(e as ts.TypeNode)) : this.fail(args[1], "expected a tuple of arguments");
-        return `${pn} ${subject}${extra.map((x) => ` ${x}`).join("")} = true`;
+        return this.#inlinePredicate(decl, pn, [subject, ...extra], deps) ?? `${pn} ${subject}${extra.map((x) => ` ${x}`).join("")} = true`;
       }
       case "Holds": {
         const pred = args[0];
@@ -1029,7 +1043,8 @@ export class Translator {
           // `fun_induction` unfolds the helper in each case; the helper itself must not be
           // in the simp set (unfolding a well-founded recursion with simp never stops).
           const lset = [...unfold, ...lemmas];
-          const ltac = `fun_induction ${l.name}${l.args.map((a) => ` ${a}`).join("")} <;> simp_all${lset.length === 0 ? "" : ` [${lset.join(", ")}]`} <;> (try omega) <;> (try grind)`;
+          const ls = lset.length === 0 ? "" : ` [${lset.join(", ")}]`;
+          const ltac = `fun_induction ${l.name}${l.args.map((a) => ` ${a}`).join("")} <;> (try simp_all${ls}) <;> (try simp (config := { zetaDelta := true })${ls}) <;> (try omega) <;> (try grind)`;
           const lsource = `@[simp] theorem ${lname}${l.binders.map((b) => ` ${b}`).join("")} :\n    ${lprop} := by\n  ${ltac}`;
           // A fresh key: one lemma per (loop, postcondition) pair.
           const lkey = Object.create(null) as ts.Node;
@@ -1044,9 +1059,16 @@ export class Translator {
           });
           lemmas.push(lname);
         }
-        const unfold = [def.leanName, ...this.#defClosure(deps, def.leanName)].filter((d) => !loopNames.has(d));
+        // Callees with postconditions are used through them (modular), not unfolded.
+        const names = new Set([...this.decls.values()].map((d) => d.leanName));
+        const postsOf = (d: string) => [...names].filter((n) => n.startsWith(`${d}.post_`));
+        const closure = this.#defClosure(deps, def.leanName).filter((d) => !loopNames.has(d));
+        const modular = closure.filter((d) => postsOf(d).length > 0);
+        const unfold = [def.leanName, ...closure.filter((d) => !modular.includes(d))];
+        const calleeLemmas = modular.flatMap(postsOf);
         const simpSet = [...unfold, ...lemmas].join(", ");
-        const finish = `simp_all [${simpSet}] <;> (try omega) <;> (try grind)`;
+        // The goal may be about `let`-bound values: simplify it through them too.
+        const finish = `(try simp_all [${simpSet}]) <;> (try simp (config := { zetaDelta := true }) [${simpSet}]) <;> (try omega) <;> (try grind${calleeLemmas.length === 0 ? "" : ` [${calleeLemmas.join(", ")}]`})`;
         let tac = recursive ? `fun_induction ${def.leanName}${allArgs.map((a) => ` ${a}`).join("")} <;> ${finish}` : finish;
         if (lemmas.length > 0) {
           // The function's body ends in a call of its outermost loop: use the loop lemma.
@@ -1076,10 +1098,120 @@ export class Translator {
    * condition mentions with simplification, arithmetic and `grind`.
    */
   auto(propDeps: Iterable<string>): string {
-    const defs = this.#defClosure(propDeps, "").filter((d) => !this.#isLoopHelper(d));
+    // Callees with postconditions are used through them (modular reasoning): kept folded,
+    // with their lemmas given to grind.
+    const names = [...this.decls.values()].map((d) => d.leanName);
+    const postsOf = (d: string) => names.filter((n) => n.startsWith(`${d}.post_`) && !n.slice(d.length + 6).includes("."));
+    const closure = this.#defClosure(propDeps, "").filter((d) => !this.#isLoopHelper(d));
+    const defs = closure.filter((d) => postsOf(d).length === 0);
+    const lemmas = closure.flatMap(postsOf);
     const set = defs.length === 0 ? "" : ` [${defs.join(", ")}]`;
-    return `by first | omega | (simp_all${set} <;> omega) | (simp_all${set} <;> grind) | (simp_all (config := { zetaDelta := true })${set} <;> omega) | grind | decide`;
+    const viaLemmas = lemmas.length === 0 ? "" : ` | grind [${lemmas.join(", ")}] | ((try simp_all${set}) <;> grind [${lemmas.join(", ")}])`;
+    // Last resort: forget `let` values. A `let` whose index proof uses a hypothesis keeps
+    // simp from rewriting that hypothesis, which can hide the facts omega needs.
+    // Copies of the hypotheses in scope have no dependents, so simp can always unfold them.
+    const copies = this.#scopeHyps.map((h) => `(try have := ${h})`).join(" <;> ");
+    const copied = copies === "" ? "" : ` | ((try simp (config := { zetaDelta := true }) only []) <;> ${copies} <;> simp_all${set} <;> omega)`;
+    return `by first | omega | (simp_all${set} <;> omega) | (simp_all${set} <;> grind)${viaLemmas} | (simp_all (config := { zetaDelta := true })${set} <;> omega)${copied} | ((try simp (config := { zetaDelta := true }) only []) <;> (try clear_value *) <;> simp_all${set} <;> omega) | grind | decide`;
   }
+
+  /** Proof that an index is in bounds: Lean's tactic, then simplification that sees through `let`s. */
+  idxProof(): string {
+    const copies = this.#scopeHyps.map((h) => `(try have := ${h})`).join(" <;> ");
+    const copied = copies === "" ? "" : ` | (${copies} <;> simp_all <;> omega)`;
+    return `(by first | get_elem_tactic | (simp_all (config := { zetaDelta := true }) <;> omega)${copied} | ((try clear_value *) <;> simp_all <;> omega))`;
+  }
+
+  /**
+   * `p(args)` as a proposition, with the body of `p` in place of the call, when `p` is a
+   * predicate whose body is one expression (no preconditions, not recursive). Invariants and
+   * pre- and postconditions then state arithmetic facts directly, which `omega` uses without
+   * unfolding anything.
+   */
+  #inlinePredicate(decl: ts.Declaration, leanName: string, argTexts: readonly string[], deps: Set<string>): string | undefined {
+    const fl = fnLike(decl);
+    if (fl === undefined || fl.body === undefined || (fl.typeParameters?.length ?? 0) > 0 || this.hasPreconditions(fl.parameters)) return undefined;
+    const body = ts.isBlock(fl.body) ? (fl.body.statements.length === 1 && ts.isReturnStatement(fl.body.statements[0]!) ? fl.body.statements[0].expression : undefined) : fl.body;
+    if (body === undefined || fl.parameters.length !== argTexts.length) return undefined;
+    const locals = new Map<ts.Symbol, string>();
+    for (const [k, p] of fl.parameters.entries()) {
+      const sym = ts.isIdentifier(p.name) ? this.checker.getSymbolAtLocation(p.name) : undefined;
+      if (sym === undefined) return undefined;
+      locals.set(sym, `(${argTexts[k]})`);
+    }
+    const local = new Set<string>();
+    const savedGuards = this.#guards;
+    // The predicate's own definition proves these guards for every input (it has no
+    // preconditions), so the inlined body does not repeat them. It depends on that
+    // definition, so it fails if they could not be proved.
+    this.#guards = [];
+    try {
+      const text = this.expr(body, "prop", { locals, narrowed: new Map() }, local);
+      if (local.has(leanName)) return undefined;
+      // A `match` (a field access) in a hypothesis's type makes Lean generalize over that
+      // hypothesis in later matches: keep such predicates folded.
+      if (text.includes("match ")) return undefined;
+      for (const d of local) deps.add(d);
+      deps.add(leanName);
+      return `(${text})`;
+    } catch (e) {
+      if (e instanceof TranslationError) return undefined;
+      throw e;
+    } finally {
+      this.#guards = savedGuards;
+    }
+  }
+
+  /**
+   * After `const x = f(args)`: `f`'s proved postconditions, as facts about `x`. Proofs
+   * that need them (`omega` in particular) cannot find them by rewriting.
+   */
+  #calleeFacts(init: ts.Expression, x: string, scope: Scope, deps: Set<string>): string {
+    if (!ts.isCallExpression(init) || !ts.isIdentifier(init.expression)) return "";
+    const decl = this.declOf(init.expression);
+    const fl = decl === undefined ? undefined : fnLike(decl);
+    if (decl === undefined || fl === undefined || fl.type === undefined || this.modifiedParams(fl).length > 0) return "";
+    const ln = this.leanNameOf(decl);
+    if (ln === this.#currentFunction?.leanName) return "";
+    // Only simple arguments: their text can be repeated.
+    if (!init.arguments.every((a) => ts.isIdentifier(a) || ts.isNumericLiteral(a))) return "";
+    const args = init.arguments.map((a) => this.expr(a, "value", scope, new Set()));
+    const locals = new Map<ts.Symbol, string>();
+    for (const [k, p] of fl.parameters.entries()) {
+      const sym = ts.isIdentifier(p.name) ? this.checker.getSymbolAtLocation(p.name) : undefined;
+      if (sym === undefined || args[k] === undefined) return "";
+      locals.set(sym, args[k]!);
+    }
+    const lemmas = new Set([...this.decls.values()].map((d) => d.leanName));
+    let out = "";
+    const savedString = this.#subjectIsString;
+    this.#subjectIsString = this.isStringExpr(init);
+    try {
+      this.refinementsOf(fl.type, new Set(), new Map()).forEach(({ m, tp }, i) => {
+        const lemma = `${ln}.post_${i}`;
+        if (!lemmas.has(lemma)) return;
+        try {
+          const pd = new Set<string>();
+          const prop = this.refinementProp(m, x, { locals, narrowed: new Map() }, pd, tp);
+          if (prop === undefined) return;
+          for (const d of pd) deps.add(d);
+          deps.add(lemma);
+          out += `have _ : ${prop} := (${lemma}${args.map((a) => ` ${a}`).join("")})\n`;
+        } catch (e) {
+          if (!(e instanceof TranslationError)) throw e;
+        }
+      });
+    } finally {
+      this.#subjectIsString = savedString;
+    }
+    return out;
+  }
+
+  /** The function being translated calls one that needs a string's size fact. */
+  #passesStringFacts = false;
+
+  /** Names of the hypotheses (preconditions, invariants, size facts) in scope where tactics run. */
+  #scopeHyps: string[] = [];
 
   #isLoopHelper(name: string): boolean {
     for (const l of this.#loops.values()) if (l.some((x) => x.name === name)) return true;
@@ -1095,7 +1227,8 @@ export class Translator {
       const n = stack.pop()!;
       const d = byName.get(n);
       if (d === undefined || d.kind !== "def" || out.has(n)) continue;
-      if (n !== exclude) out.add(n);
+      // A loop helper is well-founded recursion: simp would unfold it forever.
+      if (n !== exclude && !this.#isLoopHelper(n)) out.add(n);
       stack.push(...d.deps);
     }
     return [...out];
@@ -1167,6 +1300,7 @@ export class Translator {
         const ty = d.type !== undefined ? this.type(d.type, deps, this.#currentTypeParams) : this.leanTypeOfKind(this.kindOf(d.initializer, s2), d);
         s2 = withLocal(s2, sym, n, ty);
         out += `let ${n} : ${ty} := ${v}\n`;
+        out += this.#calleeFacts(d.initializer, n, s2, deps);
       }
       return out + rest(s2);
     }
@@ -1296,7 +1430,7 @@ export class Translator {
         if (ik !== "nat" && ik !== "literal") return this.fail(e.left.argumentExpression, "array indices in the logic must be `nat`");
         const a = scope.locals.get(sym)!;
         const i = this.expr(e.left.argumentExpression, "value", scope, deps);
-        return { sym, name: this.freshVar(sym.getName()), value: `(${a}.set ${i} ${this.expr(e.right, "value", scope, deps)} ${IDX_PROOF})` };
+        return { sym, name: this.freshVar(sym.getName()), value: `(${a}.set ${i} ${this.expr(e.right, "value", scope, deps)} ${this.idxProof()})` };
       }
       if (op === ts.SyntaxKind.EqualsToken && ts.isPropertyAccessExpression(e.left) && ts.isIdentifier(e.left.expression)) {
         // `p.f = v` on a plain object: a new version with that field replaced.
@@ -1527,7 +1661,6 @@ export class Translator {
       for (const p of this.satisfiesProps(se, inner, pd)) invariants.push({ p, pd });
       for (const d of pd) deps.add(d);
     }
-    const invBinders = invariants.map(({ p, pd }, idx) => `(inv_${idx} : ${p} := ${this.auto(pd)})`);
     const call = (s: Scope): string => `(${name}${params.map((p) => ` ${s.locals.get(p.sym)!}`).join("")})`;
     const next = (s: Scope): string => {
       if (update === undefined) return call(s);
@@ -1542,13 +1675,26 @@ export class Translator {
     const targets: LoopTargets = { next, exit: after };
     // The exit branch (`after`) is translated in the helper's own scope.
     const loopGuardsBefore = this.#guardCount;
-    const helperBody = this.branch(
-      cond,
-      (s) => this.statements(body, j, s, deps, bodySt, { next }, targets),
-      (s) => after(s),
-      inner,
-      deps,
-    );
+    // In the helper, the hypotheses are its own (and, at the first call, the function's).
+    const outerHyps = this.#scopeHyps;
+    const helperHyps = [
+      ...params.map((p) => `size_${p.name}`),
+      ...fn.preconds.map((_, k) => `fpre_${k}`),
+      ...invariants.map((_, k) => `inv_${k}`),
+    ];
+    this.#scopeHyps = [...new Set([...outerHyps, ...helperHyps])];
+    let helperBody: string;
+    try {
+      helperBody = this.branch(
+        cond,
+        (s) => this.statements(body, j, s, deps, bodySt, { next }, targets),
+        (s) => after(s),
+        inner,
+        deps,
+      );
+    } finally {
+      this.#scopeHyps = outerHyps;
+    }
     const helperDeps = new Set(deps);
     helperDeps.delete(name);
     const tps = this.#currentTypeBinders;
@@ -1566,7 +1712,12 @@ export class Translator {
       }
       this.#subjectIsString = false;
     }
-    const sizeBinders = this.#guardCount === loopGuardsBefore ? [] : params.flatMap((p) => arraySizeBinder(p.name, p.ty));
+    // An invariant is proved at each recursive call, in the body's context: its tactic may
+    // need to unfold what the body uses.
+    this.#scopeHyps = [...new Set([...outerHyps, ...helperHyps])];
+    const invBinders = invariants.map(({ p, pd }, idx) => `(inv_${idx} : ${p} := ${this.auto(new Set([...pd, ...deps]))})`);
+    const sizeBinders = this.#guardCount === loopGuardsBefore ? [] : params.flatMap((p) => arraySizeBinder(p.name, p.ty, this.auto(deps)));
+    this.#scopeHyps = outerHyps;
     const binders = [...tps, ...params.map((p) => `(${p.name} : ${p.ty})`), ...sizeBinders, ...preBinders, ...invBinders];
     const term = measure === undefined ? "" : `\ntermination_by ${measure}`;
     const source = `def ${name}${binders.map((b) => ` ${b}`).join("")} : ${fn.ret} :=\n  ${indent(helperBody, 2)}${term}`;
@@ -1677,14 +1828,21 @@ export class Translator {
     }
     // Dependent `if`: each branch has its condition (or its negation) as a hypothesis,
     // which precondition and subtraction side conditions can use.
-    const c = this.expr(cond, "prop", scope, deps);
+    // In statements, the condition's own side conditions are proved before the `if`.
+    let pre = "";
+    let c: string;
+    if (this.#guards === undefined) {
+      const g = this.#guarded(() => this.expr(cond, "prop", scope, deps), deps);
+      pre = g.haves;
+      c = g.text;
+    } else c = this.expr(cond, "prop", scope, deps);
     const h = this.freshVar("h");
     const arm = (f: (s: Scope) => string): string => {
       if (this.#guards === undefined) return f(scope);
       const g = this.#guarded(() => f(scope), deps);
       return g.haves + g.text;
     };
-    return `if ${h} : ${c} then\n  ${indent(arm(a), 2)}\nelse\n  ${indent(arm(b), 2)}`;
+    return `${pre}if ${h} : ${c} then\n  ${indent(arm(a), 2)}\nelse\n  ${indent(arm(b), 2)}`;
   }
 
   local(id: ts.Identifier, scope: Scope): string {
@@ -1759,7 +1917,7 @@ export class Translator {
       if (ik !== "nat" && ik !== "literal") return this.fail(e.argumentExpression, "array indices in the logic must be `nat` (a negative index reads `undefined` in JavaScript)");
       // Lean's `a[i]` must prove `i < a.size` from the context, exactly the condition
       // under which JavaScript's `a[i]` is an element rather than `undefined`.
-      const r = `(${this.expr(e.expression, "value", scope, deps)}[${this.expr(e.argumentExpression, "value", scope, deps)}]'${IDX_PROOF})`;
+      const r = `(${this.expr(e.expression, "value", scope, deps)}[${this.expr(e.argumentExpression, "value", scope, deps)}]'${this.idxProof()})`;
       return this.coerceProp(e, r, mode);
     }
     if (ts.isPropertyAccessExpression(e)) {
@@ -1852,6 +2010,12 @@ export class Translator {
           return `(${sub(e.left, "value")} ++ ${sub(e.right, "value")})`;
         }
         return this.arith(k, e.left, e.right, e, scope, deps);
+      case ts.SyntaxKind.PercentToken:
+      case ts.SyntaxKind.AmpersandToken:
+      case ts.SyntaxKind.GreaterThanGreaterThanToken:
+      case ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken:
+      case ts.SyntaxKind.LessThanLessThanToken:
+        return this.bitwise(e, scope, deps);
       default:
         return this.fail(e.operatorToken, `operator ${e.operatorToken.getText()} is not supported in the logic yet`);
     }
@@ -1899,6 +2063,59 @@ export class Translator {
       return `(${body})`;
     }
     // Guards may need the predicates in scope (invariants, preconditions) unfolded.
+    const tac = this.auto(deps);
+    return `(${guards.map((g) => `have _ : ${g} := (${tac}); `).join("")}${body})`;
+  }
+
+  /**
+   * `%`, masks and shifts, with JavaScript's meaning on safe integers:
+   * - `a % b` on `nat` (b > 0 proved: `a % 0` is NaN);
+   * - `x & (2^k - 1)` (k ≤ 31) is `x mod 2^k`, for any safe integer x (ToInt32 wraps modulo 2^32);
+   * - `x >> k`, `x >>> k` on `nat` are floor division by 2^k (x < 2^31, resp. 2^32, proved);
+   * - `x << k` on `nat` is multiplication by 2^k (the result below 2^31, proved).
+   */
+  bitwise(e: ts.BinaryExpression, scope: Scope, deps: Set<string>): string {
+    const k = e.operatorToken.kind;
+    const lk = this.kindOf(e.left, scope);
+    const natLike = (x: string) => x === "nat" || x === "literal";
+    const l = this.expr(e.left, "value", scope, deps);
+    const lit = (x: ts.Expression): number | undefined => (ts.isNumericLiteral(x) && /^(0x[0-9a-fA-F]+|[0-9]+)$/.test(x.text) ? Number(x.text) : undefined);
+    const guards: string[] = [];
+    let body: string;
+    if (k === ts.SyntaxKind.PercentToken) {
+      if (!natLike(lk) || !natLike(this.kindOf(e.right, scope))) return this.fail(e, "`%` in the logic needs `nat` operands (on negative numbers JavaScript's remainder takes the sign of the dividend)");
+      const r = this.expr(e.right, "value", scope, deps);
+      if (lit(e.right) === undefined || lit(e.right) === 0) guards.push(`${r} > 0`);
+      body = `${l} % ${r}`;
+    } else if (k === ts.SyntaxKind.AmpersandToken) {
+      const m = lit(e.right);
+      if (m === undefined || m >= 2 ** 31 || ((m + 1) & m) !== 0) return this.fail(e.right, "`&` in the logic needs a mask `2^k - 1` (k ≤ 31) on its right, such as `0xFF`");
+      if (natLike(lk)) body = `${l} % ${m + 1}`;
+      else if (lk === "int") body = `(${l} % (${m + 1} : Int)).toNat`;
+      else return this.fail(e.left, "`&` in the logic needs a `nat` or `int` operand");
+    } else {
+      const n = lit(e.right);
+      if (n === undefined || n > 31) return this.fail(e.right, "shifts in the logic need a constant shift (0 to 31)");
+      if (!natLike(lk)) return this.fail(e.left, "shifts in the logic need a `nat` operand");
+      if (k === ts.SyntaxKind.LessThanLessThanToken) {
+        guards.push(`${l} * ${2 ** n} < 2147483648`);
+        body = `${l} * ${2 ** n}`;
+      } else {
+        guards.push(`${l} < ${k === ts.SyntaxKind.GreaterThanGreaterThanToken ? 2147483648 : 4294967296}`);
+        body = `${l} / ${2 ** n}`;
+      }
+    }
+    return this.#withGuards(body, guards, deps);
+  }
+
+  /** `(body)`, with obligations `guards` proved where it is evaluated. */
+  #withGuards(body: string, guards: readonly string[], deps: Set<string>): string {
+    if (guards.length === 0) return `(${body})`;
+    this.#guardCount += guards.length;
+    if (this.#guards !== undefined) {
+      this.#guards.push(...guards);
+      return `(${body})`;
+    }
     const tac = this.auto(deps);
     return `(${guards.map((g) => `have _ : ${g} := (${tac}); `).join("")}${body})`;
   }
@@ -2054,6 +2271,15 @@ export class Translator {
         if ((a === "nat" || a === "literal") && (b === "nat" || b === "literal")) return a === "literal" && b === "literal" ? "literal" : "nat";
         return "other";
       }
+      if (
+        k === ts.SyntaxKind.PercentToken ||
+        k === ts.SyntaxKind.AmpersandToken ||
+        k === ts.SyntaxKind.GreaterThanGreaterThanToken ||
+        k === ts.SyntaxKind.GreaterThanGreaterThanGreaterThanToken ||
+        k === ts.SyntaxKind.LessThanLessThanToken
+      ) {
+        return "nat";
+      }
       return "boolean";
     }
     if (this.isBooleanType(e)) return "boolean";
@@ -2155,9 +2381,19 @@ export class Translator {
         if (ts.isBinaryExpression(inner) && inner.operatorToken.kind === ts.SyntaxKind.SlashToken && this.isNatExpr(inner.left, scope) && (this.isNatExpr(inner.right, scope) || ts.isNumericLiteral(inner.right))) {
           // On non-negative integers, Math.floor(a / b) is exact floor division (b = 0 gives Infinity in JS: excluded).
           const b = this.expr(inner.right, "value", scope, deps);
-          return `(have _ : ${b} > 0 := (by first | omega | (simp_all <;> omega) | grind | decide); ${this.expr(inner.left, "value", scope, deps)} / ${b})`;
+          const num = this.expr(inner.left, "value", scope, deps);
+          if (ts.isNumericLiteral(inner.right) && Number(inner.right.text) > 0) return `(${num} / ${b})`;
+          return this.#withGuards(`${num} / ${b}`, [`${b} > 0`], deps);
         }
         return this.fail(e, "`Math.floor` is supported only as `Math.floor(a / b)` on `nat` values");
+      }
+      if (ts.isIdentifier(recv) && recv.text === "String" && m === "fromCharCode" && args.length === 1) {
+        const c = args[0]!;
+        const ck = this.kindOf(c, scope);
+        if (ck !== "nat" && ck !== "literal") return this.fail(c, "`String.fromCharCode` in the logic needs a `nat` code unit");
+        const cs = this.expr(c, "value", scope, deps);
+        // A code unit: JavaScript would take it modulo 2^16.
+        return this.#withGuards(`([(${cs}).toUInt16] : List UInt16)`, [`${cs} < 65536`], deps);
       }
       if (this.isStringExpr(recv)) {
         const str = this.expr(recv, "value", scope, deps);
@@ -2177,7 +2413,7 @@ export class Translator {
             const ik = this.kindOf(i, scope);
             if (ik !== "nat" && ik !== "literal") return this.fail(i, "the index must be `nat`");
             // In bounds (proved), JavaScript returns the UTF-16 code unit; out of bounds it returns NaN.
-            r = `(${str}[${this.expr(i, "value", scope, deps)}]'${IDX_PROOF}).toNat`;
+            r = `(${str}[${this.expr(i, "value", scope, deps)}]'${this.idxProof()}).toNat`;
             break;
           }
           default:
@@ -2230,6 +2466,10 @@ export class Translator {
     if (!this.isUserDecl(decl)) return this.fail(e.expression, "this function is not part of the logic (only functions in your project can be reflected)");
     const ln = this.requireDecl(decl);
     deps.add(ln);
+    // The callee needs the size facts of its arguments: so does this function, to pass them on.
+    const calleeSource = this.decls.get(decl)?.source ?? "";
+    if (calleeSource.includes("(size_")) this.#guardCount++;
+    if (/\(size_\S+ : \S+\.length ≤/.test(calleeSource)) this.#passesStringFacts = true;
     return `(${ln}${args.map((a) => ` ${this.expr(a, "value", scope, deps)}`).join("")})`;
   }
 
@@ -2477,8 +2717,6 @@ function stateProj(j: number, n: number): string {
   return ".2" + ".2".repeat(j) + (j < n - 1 ? ".1" : "");
 }
 
-/** Proof that an index is in bounds: Lean's tactic, then simplification that sees through `let`s. */
-const IDX_PROOF = "(by first | get_elem_tactic | (simp_all (config := { zetaDelta := true }) <;> omega))";
 
 /** A JavaScript string literal as its UTF-16 code units. */
 function codeUnits(text: string): string {
@@ -2493,9 +2731,14 @@ function countTerms(e: ts.Node): number {
   return 1;
 }
 
-/** ECMAScript arrays have fewer than 2^32 elements: a fact about every JavaScript array. */
-function arraySizeBinder(name: string, leanType: string): string[] {
-  return leanType.startsWith("(Array ") ? [`(size_${name} : ${name}.size < 4294967296 := by first | omega | (simp_all <;> omega) | grind | decide)`] : [];
+/**
+ * Facts about every JavaScript value: an ECMAScript array has fewer than 2^32 elements, and
+ * a string at most 2^53 - 1 code units.
+ */
+function arraySizeBinder(name: string, leanType: string, tac = "by first | omega | (simp_all <;> omega) | ((try simp (config := { zetaDelta := true }) only []) <;> (try clear_value *) <;> simp_all <;> omega) | grind | decide"): string[] {
+  if (leanType.startsWith("(Array ")) return [`(size_${name} : ${name}.size < 4294967296 := ${tac})`];
+  if (leanType === "(List UInt16)") return [`(size_${name} : ${name}.length ≤ 9007199254740991 := ${tac})`];
+  return [];
 }
 
 interface Continuation {

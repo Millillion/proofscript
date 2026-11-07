@@ -1,6 +1,6 @@
 # Status and Evidence
 
-Last updated: 2026-11-06 (0.0.7). See the [implementation plan](design/07-implementation-plan.md) for the milestones and the evidence strategy.
+Last updated: 2026-11-07 (0.0.8). See the [implementation plan](design/07-implementation-plan.md) for the milestones and the evidence strategy.
 
 ## Milestones
 
@@ -25,6 +25,7 @@ The kernel (`packages/kernel`) is the only trusted component.
   - `tutorial/`: 141/141 (94 accept, 47 reject).
   - `corner-cases/`, `other/`: all pass. Two corner cases are documented as non-terminating in Lean's kernel too; they time out here as well (scored as declines).
   - `perf/`: correct on everything that completes. The heaviest `decide` stress test (`magma-list-deep-n36`, which takes Lean's C++ kernel 83 s and 8 GB) exceeds the 390 s limit. Typical decide-heavy tests run at about 1.7× the C++ kernel's time.
+- **In CI, without Lean:** 179 arena tests (every recorded soundness bug, the tutorial, the decidable corner cases, Init.Prelude), packed in `packages/kernel/test/arena`.
 - **Differential mutation fuzzing against Lean's official kernel:** 500 mutants of valid exports, every one judged identically after one fix (the claimed types of quotient constants are now ignored, as Lean does). No mutant has ever been accepted by this kernel and rejected by Lean.
 - **Unit tests:** substitution and abstraction laws; the universe-level decision procedure checked against brute-force evaluation on 3,000 random level pairs.
 
@@ -34,6 +35,7 @@ The kernel (`packages/kernel`) is the only trusted component.
 
 - End-to-end fixtures that must verify: `nat` arithmetic, a recursive tree type, automatically proved postconditions with preconditions, and loops (`sumOdds(n) === n * n` through a `while` loop's invariant; a `for` loop over an array with every index proved in bounds).
 - Red-team fixtures that must not: a false theorem; a proof using `sorry` (reported as *admitted*, never *verified*); IEEE-754 `number` arithmetic treated as integers; `===` on objects treated as structural equality; a wrong postcondition; a loop invariant that is not preserved; an out-of-bounds array read; a loop without a decreasing measure.
+- `examples/base64`, a verified drop-in replacement for base64-js: 18 theorems; base64-js's own suite 57/57; 27,000 random inputs identical to base64-js.
 - Every result carries a trust footprint: the axioms it depends on, and the TypeScript functions whose translation it trusts.
 - **Certificates (0.0.6):** projects can be checked without Lean against a certificate ([certificates](certificates.md)). Every statement, definition signature, definition equation and constructor in the repository binds (151 declarations); `examples/math` verifies 28/28 from its committed certificate. Forged certificates (made with Lean), corrupted proofs, a redefined library function, stale toolchains and edited sources never verify (`certificate.test.ts`).
 

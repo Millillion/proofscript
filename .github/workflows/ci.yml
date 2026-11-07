@@ -4,6 +4,8 @@ on:
     branches: [main]
   pull_request:
 jobs:
+  # Without Lean: the kernel's tests and the Lean Kernel Arena subset, and every example
+  # checked from its committed certificate (proofs re-checked by ProofScript's kernel).
   check:
     runs-on: ubuntu-latest
     steps:
@@ -13,4 +15,39 @@ jobs:
           node-version: 24
       - run: npm ci
       - run: npm run typecheck
+      - run: npm test
+      - name: Examples, from their certificates
+        run: |
+          for d in examples/math examples/tutorial examples/base64; do
+            (cd "$d" && ../../packages/checker/bin/proofscript.mjs check --certificate)
+          done
+      - name: The npm package, installed in a fresh project
+        run: |
+          node scripts/build-npm.ts
+          mkdir -p /tmp/consumer && npm pack dist/npm/proofscript --pack-destination /tmp/consumer
+          cp -r examples/tutorial/src examples/tutorial/tsconfig.json examples/tutorial/proofscript.cert /tmp/consumer/
+          cd /tmp/consumer && npm init -y && npm pkg set type=module && npm install ./proofscript-*.tgz
+          npx proofscript check --certificate
+
+  # With Lean: every fixture and example proved from scratch.
+  prove:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.elan
+            ~/.cache/proofscript
+          key: lean-${{ hashFiles('packages/checker/src/lean.ts') }}
+      - name: Install elan
+        run: |
+          if [ ! -x ~/.elan/bin/elan ]; then
+            curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+          fi
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+      - run: npm ci
       - run: npm test
