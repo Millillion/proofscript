@@ -112,8 +112,10 @@ export function equationDecl(def: GeneratedDecl): GeneratedDecl | undefined {
   // Callee facts (`have _ : P := (g.post_0 x)`) are proofs; in a theorem's statement Lean
   // cannot elaborate them, and they carry no meaning, so the equation leaves them out.
   const body = withoutFacts(parts.body);
+  // The definition's options (a larger proof budget) apply to its equation too.
+  const options = /^(?:set_option \S+ \S+ in\n)*/.exec(def.source)![0];
   const source =
-    `theorem ${f}.ps_eqn${bs.map((b) => ` ${b.text}`).join("")} :\n    ${f}${args.map((a) => ` ${a}`).join("")} = (\n${body}) :=\n` +
+    `${options}theorem ${f}.ps_eqn${bs.map((b) => ` ${b.text}`).join("")} :\n    ${f}${args.map((a) => ` ${a}`).join("")} = (\n${body}) :=\n` +
     `  by first | (rw [${f}]; done) | (rw [${f}.eq_def]; done) | rfl`;
   return { kind: "theorem", aux: "eqn", tsName: `${def.tsName} (equation)`, leanName: `${f}.ps_eqn`, node: def.node, source, deps: new Set([f, ...def.deps]) };
 }
@@ -154,8 +156,9 @@ export function uniquenessDecl(def: GeneratedDecl): GeneratedDecl | undefined {
   const piType = `${parts.binders.map((b) => `${b} → `).join("")}${parts.type}`;
   const all = plain.map((b) => b.text).join(" ");
   const forall = (s: string) => (all === "" ? s : `∀ ${all}, ${s}`);
+  const options = /^(?:set_option \S+ \S+ in\n)*/.exec(def.source)![0];
   const source =
-    `theorem ${f}.ps_unique (${g} : ${piType})\n` +
+    `${options}theorem ${f}.ps_unique (${g} : ${piType})\n` +
     `    (hg : ${forall(`${g}${args.map((a) => ` ${a}`).join("")} = (\n${body.replace(selfRef(f), g)})`)}) :\n` +
     `    ${forall(`${g}${args.map((a) => ` ${a}`).join("")} = ${f}${args.map((a) => ` ${a}`).join("")}`)} := by\n` +
     `  ${plain.length === 0 ? "" : `intro ${plain.flatMap((b) => b.names).join(" ")}\n  `}` +

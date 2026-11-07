@@ -1,6 +1,6 @@
 # ProofScript reference
 
-Version 0.0.8. The syntax is provisional until the syntax review (D29) before 0.1.0.
+Version 0.0.10. The syntax is provisional until the syntax review (D29) before 0.1.0.
 
 Everything ProofScript adds is exported by the `proofscript` package: types (which mean little or nothing to `tsc`) and a few runtime functions for theorems. The checker recognizes them by symbol, so they must be imported from `proofscript`; a local type named `Lt` is not ProofScript's `Lt`.
 
@@ -47,6 +47,20 @@ Where a refinement appears decides what it means:
 | The return type | **Postcondition:** proved automatically, reported as a theorem `f (postcondition …)` |
 | `x satisfies R;` at the top of a loop body | **Loop invariant:** proved on entry and after every iteration |
 | A theorem's parameter | **Hypothesis** of the theorem |
+
+### Specification predicates
+
+A boolean function whose body is one expression using `forall` or `exists` (directly, or through another specification predicate) is a **specification predicate** (D43). It is a proposition in the logic, so it can describe whole arrays:
+
+```ts
+export function filled(out: readonly nat[]): boolean {
+  return forall((p: nat) => implies(p < out.length, out[p] === f(p)));
+}
+```
+
+- Use it anywhere a refinement goes: `Holds<typeof filled, [typeof out]>` as a postcondition, `out satisfies Holds<…>;` as a loop invariant, or in theorems.
+- It cannot run: in JavaScript `forall` returns `true`, so any call from code that runs is an error.
+- Quantified invariants over arrays are maintained automatically. Each read of a written array is split into "the written position" and "unchanged", and `grind` decides each case. Specifications are easiest to prove when they read the same positions the code writes, for example group by group (`out[4 * h + 1]`) rather than through a selector.
 
 ### Frames and termination
 

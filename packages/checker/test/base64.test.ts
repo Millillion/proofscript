@@ -15,7 +15,7 @@ const node = (args: string[]) => spawnSync(process.execPath, ["--max-old-space-s
 test("examples/base64 verifies with Lean", { skip: !leanAvailable() }, () => {
   const r = check(join(dir, "tsconfig.json"));
   assert.deepEqual(r.diagnostics, []);
-  assert.equal(r.theorems.length, 18);
+  assert.equal(r.theorems.length, 19);
   assert.ok(r.theorems.every((t) => t.status === "verified"));
   // The wrapper's calls are the boundary: reported, not proved.
   assert.equal(r.unverified.length, 2);
@@ -24,7 +24,7 @@ test("examples/base64 verifies with Lean", { skip: !leanAvailable() }, () => {
 test("examples/base64 verifies from its committed certificate, without Lean", () => {
   const r = checkWithCertificate(loadProject(join(dir, "tsconfig.json")), join(dir, "proofscript.cert"));
   assert.deepEqual(r.diagnostics, []);
-  assert.equal(r.theorems.length, 18);
+  assert.equal(r.theorems.length, 19);
   assert.ok(r.theorems.every((t) => t.status === "verified"));
 });
 

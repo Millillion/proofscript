@@ -818,17 +818,39 @@ export class Translator {
     if (fn.body === undefined) return undefined;
     const body = ts.isBlock(fn.body) ? (fn.body.statements.length === 1 && ts.isReturnStatement(fn.body.statements[0]!) ? fn.body.statements[0].expression : undefined) : fn.body;
     if (body === undefined) return undefined;
+    if (this.#specVisiting.has(fn.node)) return undefined;
+    // Only boolean functions are predicates.
+    const sig = this.checker.getSignatureFromDeclaration(ts.isVariableDeclaration(fn.node) ? (fn.node.initializer as ts.SignatureDeclaration) : (fn.node as ts.SignatureDeclaration));
+    const rt = sig === undefined ? undefined : this.checker.getReturnTypeOfSignature(sig);
+    if (rt === undefined || !(rt.flags & ts.TypeFlags.BooleanLike)) return undefined;
+    this.#specVisiting.add(fn.node);
     let quantified = false;
-    const visit = (n: ts.Node): void => {
-      if (quantified) return;
-      if (ts.isCallExpression(n)) {
-        const ps = this.ps(n.expression);
-        if (ps === "forall" || ps === "exists") quantified = true;
-      }
-      ts.forEachChild(n, visit);
-    };
-    visit(body);
+    try {
+      const visit = (n: ts.Node): void => {
+        if (quantified) return;
+        if (ts.isCallExpression(n)) {
+          const ps = this.ps(n.expression);
+          if (ps === "forall" || ps === "exists") quantified = true;
+          // Defined through another specification predicate: one too.
+          const callee = ts.isIdentifier(n.expression) ? fnLike(this.declOf(n.expression)) : undefined;
+          if (callee !== undefined && this.isUserDecl(callee.node) && this.specBody(callee) !== undefined) quantified = true;
+        }
+        ts.forEachChild(n, visit);
+      };
+      visit(body);
+    } finally {
+      this.#specVisiting.delete(fn.node);
+    }
     return quantified ? body : undefined;
+  }
+
+  readonly #specVisiting = new Set<ts.Node>();
+  /** Lean names of the specification predicates translated so far. */
+  readonly #specNames = new Set<string>();
+
+  /** Whether a proposition is quantified (directly, or through a specification predicate). */
+  #quantified(prop: string): boolean {
+    return prop.includes("∀") || [...this.#specNames].some((n) => prop.includes(n));
   }
 
   #translateSpec(fn: FnLike, body: ts.Expression): GeneratedDecl {
@@ -854,6 +876,7 @@ export class Translator {
     }
     deps.delete(leanName);
     const source = `def ${leanName}${binders.map((b) => ` ${b}`).join("")} : Prop :=\n  ${indent(text, 2)}`;
+    this.#specNames.add(leanName);
     const def: GeneratedDecl = { kind: "def", tsName: fn.name.text, leanName, node: fn.node, source, deps };
     this.decls.set(fn.node, def);
     return def;
@@ -1119,8 +1142,14 @@ export class Translator {
           // in the simp set (unfolding a well-founded recursion with simp never stops).
           const lset = [...unfold, ...lemmas];
           const ls = lset.length === 0 ? "" : ` [${lset.join(", ")}]`;
-          const ltac = `fun_induction ${l.name}${l.args.map((a) => ` ${a}`).join("")} <;> (try simp_all${ls}) <;> (try simp (config := { zetaDelta := true })${ls}) <;> (try omega) <;> (try grind)`;
-          const lsource = `@[simp] theorem ${lname}${l.binders.map((b) => ` ${b}`).join("")} :\n    ${lprop} := by\n  ${ltac}`;
+          const induct = `fun_induction ${l.name}${l.args.map((a) => ` ${a}`).join("")}`;
+          // A quantified postcondition (about arrays): each case is the induction hypothesis,
+          // or the exit, where the array tactic relates the last writes to the invariant.
+          const ltac = this.#quantified(lprop)
+            ? `${induct} <;> first | assumption | (simp_all${ls}; done) | ${arraysTactic(unfold.filter((d) => !this.#isLoopHelper(d)), [...this.#specNames])}`
+            : `${induct} <;> (try simp_all${ls}) <;> (try simp (config := { zetaDelta := true })${ls}) <;> (try omega) <;> (try grind)`;
+          const lbudget = this.#quantified(lprop) ? "set_option maxHeartbeats 1000000 in\n" : "";
+          const lsource = `${lbudget}@[simp] theorem ${lname}${l.binders.map((b) => ` ${b}`).join("")} :\n    ${lprop} := by\n  ${ltac}`;
           // A fresh key: one lemma per (loop, postcondition) pair.
           const lkey = Object.create(null) as ts.Node;
           this.decls.set(lkey, {
@@ -1147,7 +1176,7 @@ export class Translator {
         let tac = recursive ? `fun_induction ${def.leanName}${allArgs.map((a) => ` ${a}`).join("")} <;> ${finish}` : finish;
         if (lemmas.length > 0) {
           // The function's body ends in a call of its outermost loop: use the loop lemma.
-          tac = `first\n    | (simp only [${def.leanName}] <;> first ${[...lemmas].reverse().map((l) => `| apply ${l} `).join("")})\n    | (${tac})`;
+          tac = `first\n    | (simp only [${def.leanName}] <;> first ${[...lemmas].reverse().map((l) => `| (apply ${l} <;> (try assumption) <;> (try (intros; omega)) <;> (try simp_all) <;> (try omega); done) `).join("")})\n    | (${tac})`;
         }
         const leanName = `${def.leanName}.post_${i}`;
         const source = `@[simp] theorem ${leanName}${binders.map((b) => ` ${b}`).join("")} :\n    ${prop} := by\n  ${tac}`;
@@ -1190,7 +1219,7 @@ export class Translator {
     // Quantified facts about arrays after writes: split each read of a written array.
     const arrays = ` | (intros; simp only [Array.getElem_set, Array.size_set] at *; repeat' split; all_goals (try subst_vars) <;> (try rfl) <;> (try (simp_all${set}; done)) <;> (try (simp_all${set} <;> omega)) <;> (try (apply_assumption <;> simp_all <;> omega)))`;
     // The same, with grind: case splits, congruence and arithmetic over the written positions.
-    const arraysGrind = ` | (intros; simp (config := { zetaDelta := true }) only [Array.getElem_set, Array.size_set]; split <;> (try split) <;> (try split) <;> (try split) <;> first | grind${closure.map((d) => ` | grind [${d}]`).join("")}${closure.length > 1 ? ` | grind [${closure.join(", ")}]` : ""})`;
+    const arraysGrind = ` | ${arraysTactic(closure, [...this.#specNames])}`;
     // A quantified goal (a specification predicate) is about arrays: their alternatives first.
     if (quantified) return `by first${arraysGrind}${arrays} | omega | (simp_all${set} <;> grind)${viaLemmas} | grind`;
     return `by first | omega | (simp_all${set} <;> omega) | (simp_all${set} <;> grind)${viaLemmas}${arrays}${arraysGrind} | (simp_all (config := { zetaDelta := true })${set} <;> omega)${copied} | ((try simp (config := { zetaDelta := true }) only []) <;> (try clear_value *) <;> simp_all${set} <;> omega) | grind | decide`;
@@ -1799,13 +1828,13 @@ export class Translator {
     // An invariant is proved at each recursive call, in the body's context: its tactic may
     // need to unfold what the body uses.
     this.#scopeHyps = [...new Set([...outerHyps, ...helperHyps])];
-    const invBinders = invariants.map(({ p, pd }, idx) => `(inv_${idx} : ${p} := ${this.auto(new Set([...pd, ...deps]), p.includes("∀"))})`);
+    const invBinders = invariants.map(({ p, pd }, idx) => `(inv_${idx} : ${p} := ${this.auto(new Set([...pd, ...deps]), this.#quantified(p))})`);
     const sizeBinders = this.#guardCount === loopGuardsBefore ? [] : params.flatMap((p) => arraySizeBinder(p.name, p.ty, this.auto(deps)));
     this.#scopeHyps = outerHyps;
     const binders = [...tps, ...params.map((p) => `(${p.name} : ${p.ty})`), ...sizeBinders, ...preBinders, ...invBinders];
     const term = measure === undefined ? "" : `\ntermination_by ${measure}`;
     // Quantified invariants need more of Lean's automation (bounded by the memory cap, D41).
-    const budget = invariants.some(({ p }) => p.includes("∀")) ? "set_option maxHeartbeats 1000000 in\n" : "";
+    const budget = invariants.some(({ p }) => this.#quantified(p)) ? "set_option maxHeartbeats 1000000 in\n" : "";
     const source = `${budget}def ${name}${binders.map((b) => ` ${b}`).join("")} : ${fn.ret} :=\n  ${indent(helperBody, 2)}${term}`;
     const key = node;
     this.decls.set(key, { kind: "def", tsName: `${fn.tsName} (loop)`, leanName: name, node, source, deps: helperDeps, assumptions: [...this.#assumptions] });
@@ -2821,6 +2850,16 @@ function countTerms(e: ts.Node): number {
   if (ts.isParenthesizedExpression(e)) return countTerms(e.expression);
   if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.PlusToken) return countTerms(e.left) + countTerms(e.right);
   return 1;
+}
+
+/**
+ * Quantified facts about arrays after writes: unfold the `let`s of the goal, split each read
+ * of a written array (`(a.set i v)[p] = if i = p then v else a[p]`), and let grind decide each
+ * case, unfolding at most one definition at a time (unfolding all at once defeats it).
+ */
+function arraysTactic(defs: readonly string[], specs: readonly string[] = []): string {
+  const unfoldSpecs = specs.length === 0 ? "" : `(try simp only [${specs.join(", ")}] at *); `;
+  return `(${unfoldSpecs}intros; (try simp (config := { zetaDelta := true }) only [Array.getElem_set, Array.size_set]); (try split) <;> (try split) <;> (try split) <;> (try split) <;> first | grind${defs.map((d) => ` | grind [${d}]`).join("")}${defs.length > 1 ? ` | grind [${defs.join(", ")}]` : ""})`;
 }
 
 /**

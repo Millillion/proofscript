@@ -2,6 +2,16 @@
 
 ProofScript ships patch releases (0.0.x) until the 0.1.0 MVP. See [docs/v0.1.md](docs/v0.1.md).
 
+## 0.0.10 (2026-11-07)
+
+- **Specification predicates (D43):** a boolean function whose body uses `forall`/`exists` (directly or through another one) is a proposition in the logic. It describes whole arrays in postconditions, loop invariants and theorems, and calling it from running code is an error. See the [reference](docs/reference.md#specification-predicates) and the [design](docs/design/09-specifications.md).
+- **Quantified invariants are maintained automatically.** Reads of written arrays are split into the written position and the rest, and `grind` decides each case. Loops with quantified invariants get a larger proof budget (still under the memory cap). Fixtures:
+  - `good-spec`: filling an array, with the whole-array postcondition proved;
+  - `bad-spec`: an off-by-one invariant, and a specification predicate called at runtime.
+- **base64:** the encoder's loop carries a quantified invariant, proved automatically: every unit of every whole group written so far is the right sextet, in the alphabet. The whole-array round trip is the next step (0.0.11).
+- Postcondition lemmas of loops close their own precondition goals after `apply`. Declarations may carry `set_option … in` (certificates parse it, and equations inherit it).
+- 67/67 tests pass.
+
 ## 0.0.9 (2026-11-07)
 
 - **Certificates establish termination.** Every recursive function (including every loop) now also has a uniqueness theorem: any function satisfying its equation equals it. Lean proves it along the function's own recursion when the certificate is made, and ProofScript binds it like every other statement. Results checked from certificates no longer list "terminates (proved by Lean when the certificate was made)", unless Lean could not prove one. Covered: every loop in the fixtures and `examples/math`; base64's two large loops keep the assumption (D42). 65/65 tests pass.

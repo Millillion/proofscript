@@ -11,7 +11,7 @@ A verified drop-in replacement for [base64-js](https://github.com/beatgammit/bas
 
 ## What is proved
 
-`proofscript check` verifies 18 theorems and every function in `alphabet.ts`, `group.ts` and `base64.ts`:
+`proofscript check` verifies 19 theorems and every function in `alphabet.ts`, `group.ts` and `base64.ts`:
 
 - **Safety.** Every array and string access is in bounds, and every write lands inside the output buffer. No arithmetic overflows. Shifts and masks keep JavaScript's meaning: `x & 0xFF` is `x mod 256` for any safe integer.
 - **Ranges.** Every encoded unit is an ASCII code of the alphabet (below 128), every decoded value a byte (below 256), every sextet below 64.
