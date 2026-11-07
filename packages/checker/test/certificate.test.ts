@@ -61,7 +61,8 @@ test("examples/math verifies from its committed certificate, without Lean", () =
   assert.ok(r.theorems.every((t) => t.status === "verified"));
   const rev = r.theorems.find((t) => t.tsName === "reverse_reverse")!;
   assert.ok(rev.reflected.includes("reverse"));
-  assert.ok(rev.assumptions.some((a) => /terminate/.test(a)), "termination taken from the certificate is an assumption");
+  // Termination is bound too (by each recursive function's uniqueness theorem): no assumption.
+  assert.ok(r.theorems.every((t) => !t.assumptions.some((a) => /terminate/.test(a))), "termination is established, not assumed");
 });
 
 test("examples/tutorial verifies from its committed certificate, without Lean", () => {

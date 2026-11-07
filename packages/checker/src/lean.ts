@@ -62,7 +62,14 @@ export function generateSource(decls: readonly GeneratedDecl[]): { source: strin
 export function buildLean(workDir: string, decls: readonly GeneratedDecl[]): LeanBuild {
   mkdirSync(workDir, { recursive: true });
   writeFileSync(join(workDir, "lean-toolchain"), `${LEAN_TOOLCHAIN}\n`);
-  writeFileSync(join(workDir, "lakefile.toml"), `name = "${MODULE}"\ndefaultTargets = ["${MODULE}"]\n\n[[lean_lib]]\nname = "${MODULE}"\n`);
+  // Lean's memory and threads are capped (PROOFSCRIPT_LEAN_MEMORY, in MB; PROOFSCRIPT_LEAN_THREADS)
+  // so that proving never takes over the machine.
+  const memory = process.env.PROOFSCRIPT_LEAN_MEMORY ?? "4096";
+  const threads = process.env.PROOFSCRIPT_LEAN_THREADS ?? "2";
+  writeFileSync(
+    join(workDir, "lakefile.toml"),
+    `name = "${MODULE}"\ndefaultTargets = ["${MODULE}"]\n\n[[lean_lib]]\nname = "${MODULE}"\nmoreLeanArgs = ["-M", "${memory}", "-j", "${threads}"]\n`,
+  );
   const { source, lines } = generateSource(decls);
   writeFileSync(join(workDir, `${MODULE}.lean`), source);
   const r = run("lake", ["build"], workDir);

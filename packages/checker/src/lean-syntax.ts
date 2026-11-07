@@ -289,6 +289,20 @@ class Parser {
 
   prefix(): Term {
     const t = this.peek;
+    // A dependent arrow: `(x : A) → B`, `{T : Type} → B`, `(h : P := by tac) → B`.
+    if (t.kind === "sym" && (t.v === "(" || t.v === "{")) {
+      const save = this.#i;
+      try {
+        const binders = this.binders();
+        if (binders.length > 0 && this.at("→")) {
+          this.next();
+          return { k: "forall", binders, body: this.term(25) };
+        }
+      } catch (e) {
+        if (!(e instanceof ParseError)) throw e;
+      }
+      this.#i = save;
+    }
     if (t.kind === "sym") {
       switch (t.v) {
         case "¬":
@@ -333,7 +347,7 @@ class Parser {
   }
 
   quantBinders(): Binder[] {
-    if (this.at("(")) return this.binders();
+    if (this.at("(") || this.at("{")) return this.binders();
     const names: string[] = [];
     while (!this.at(",") && !this.at(":")) names.push(this.ident());
     let type: Term | undefined;

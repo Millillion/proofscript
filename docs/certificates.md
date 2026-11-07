@@ -18,7 +18,7 @@ The gzipped [lean4export](https://github.com/leanprover/lean4export) output of e
 1. **Kernel.** ProofScript's kernel re-checks every declaration in the certificate, exactly as after a check with Lean.
 2. **Binding.** The project is translated again, from the current TypeScript. Each generated declaration is *elaborated by ProofScript itself*: a parser for the generated Lean (`lean-syntax.ts`) and a small elaborator (`elab.ts`, with unification and instance resolution). The kernel then checks that the certificate's declaration has exactly that type (definitional equality).
    - **Theorems:** the statement.
-   - **Definitions:** the signature, and the equation `f params = body`. Lean proves the equation when the certificate is made. Any function satisfying it is the one written in TypeScript (if its recursion terminates; see below).
+   - **Definitions:** the signature, and the equation `f params = body`, which Lean proves when the certificate is made. For a recursive function, also its uniqueness theorem: only one function satisfies the equation. So the certificate's function is the one written in TypeScript.
    - **Inductive types:** the type, and the constructors with their types, in order.
    - **Proofs are never elaborated.** Where the source has a proof (an index bound, a precondition at a call, a `have`), the elaborated term has a hole. Proof irrelevance makes the hole equal to any proof of the same proposition. The certificate must still contain such a proof, and the kernel checks it.
 3. **Library.** Every Lean library constant a bound statement depends on, through types and definition bodies, must be the pinned toolchain's own. `packages/checker/src/library.json` holds content hashes (458 constants), generated from Lean by `packages/checker/scripts/library.ts`. A certificate that redefined `Nat.add` or `LT.lt` would be caught here. Library *theorems* need no such check: the kernel proves them, and which proof is used cannot change a statement's meaning.
@@ -35,14 +35,7 @@ nat.ts:4:1: error: theorem add_comm is not covered by the certificate (the certi
 - ProofScript's kernel, as always.
 - The TypeScript → Lean translation, as always ("trusts the translation of …" in each result).
 - The elaborator, for the meaning of generated statements. It is small and deliberately incomplete: whatever it cannot elaborate is not bound.
-- **Termination of recursive functions.** An equation like `length xs = match xs with … 1 + length tail` determines `length` only because the recursion terminates, and the certificate cannot show that by itself. Lean proved it when the certificate was made. Each result lists these functions:
-
-  ```
-  ✓ size_mirror — verified, axioms: Quot.sound, propext; trusts the translation of mirror, size;
-    assumes mirror, size terminate (proved by Lean when the certificate was made), …
-  ```
-
-  Closing this needs the termination measures' decrease obligations as further bound theorems. It is planned.
+- Nothing about termination. An equation like `length xs = match xs with … 1 + length tail` determines `length` only because the recursion terminates. So for every recursive function the certificate also carries a uniqueness theorem: any `g` satisfying the same equation equals `length`. Lean proves it by induction along the function's own recursion; ProofScript elaborates its statement and binds it like the others. If Lean could not prove one, the result lists `f terminates (proved by Lean when the certificate was made)` as an assumption instead.
 
 ## Evidence
 

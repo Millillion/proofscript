@@ -23,6 +23,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { gunzipSync, gzipSync } from "node:zlib";
 import {
   type Expr,
+  getAppFn,
   Kernel,
   KernelError,
   type Name,
@@ -55,7 +56,7 @@ export interface CertificateHeader {
 // ---- Definition equations ---------------------------------------------------------------------
 
 /** Splits generated `def` source into its binder groups and its body. */
-export function splitDef(src: string): { name: string; binders: string[]; body: string } | undefined {
+export function splitDef(src: string): { name: string; binders: string[]; type: string; body: string } | undefined {
   const m = /^(?:@\[[^\]]*\] )?def (\S+)/.exec(src);
   if (m === null) return undefined;
   let i = m[0].length;
@@ -76,10 +77,11 @@ export function splitDef(src: string): { name: string; binders: string[]; body: 
   }
   const bodyAt = src.indexOf(":=\n", i);
   if (!src.startsWith(": ", i) || bodyAt < 0) return undefined;
+  const type = src.slice(i + 2, bodyAt).trim();
   let body = src.slice(bodyAt + 3);
   const term = body.indexOf("\ntermination_by");
   if (term >= 0) body = body.slice(0, term);
-  return { name: m[1]!, binders, body };
+  return { name: m[1]!, binders, type, body };
 }
 
 /** A binder group without its default (`(h : P := by tac)` → `(h : P)`), and its names. */
@@ -109,19 +111,61 @@ export function equationDecl(def: GeneratedDecl): GeneratedDecl | undefined {
   const f = def.leanName;
   // Callee facts (`have _ : P := (g.post_0 x)`) are proofs; in a theorem's statement Lean
   // cannot elaborate them, and they carry no meaning, so the equation leaves them out.
-  const body = parts.body.replace(/^[ \t]*have _ : [^\n]*:= \(PS\.\S+\.post_\d+[^()\n]*\)\n/gm, "");
+  const body = withoutFacts(parts.body);
   const source =
     `theorem ${f}.ps_eqn${bs.map((b) => ` ${b.text}`).join("")} :\n    ${f}${args.map((a) => ` ${a}`).join("")} = (\n${body}) :=\n` +
     `  by first | (rw [${f}]; done) | (rw [${f}.eq_def]; done) | rfl`;
   return { kind: "theorem", aux: "eqn", tsName: `${def.tsName} (equation)`, leanName: `${f}.ps_eqn`, node: def.node, source, deps: new Set([f, ...def.deps]) };
 }
 
-/** The declarations, each definition followed by its equation. */
+/** Callee facts are proofs: equations (statements) leave them out. */
+function withoutFacts(body: string): string {
+  return body.replace(/^[ \t]*have _ : [^\n]*:= \(PS\.\S+\.post_\d+[^()\n]*\)\n/gm, "");
+}
+
+/** Occurrences of the name `f` itself (not `f.post_0`, not a longer name). */
+const selfRef = (f: string) => new RegExp(`${f.replace(/[.]/g, "\\.")}(?![\\w.'])`, "g");
+
+/**
+ * For a recursive `f`: every function satisfying `f`'s equation is `f`.
+ *
+ * `theorem f.ps_unique (g : ∀ params, T) (hg : ∀ params, g args = body[g/f]) : ∀ params, g args = f args`
+ *
+ * An equation pins a recursive function down only if its recursion terminates; this theorem
+ * is that fact, proved by Lean (by induction along `f`'s own recursion) when the certificate
+ * is made, and bound like every other statement.
+ */
+export function uniquenessDecl(def: GeneratedDecl): GeneratedDecl | undefined {
+  const parts = splitDef(def.source);
+  if (parts === undefined) return undefined;
+  const f = def.leanName;
+  const body = withoutFacts(parts.body);
+  if (!selfRef(f).test(body)) return undefined;
+  const plain = parts.binders.map(plainBinder);
+  const args = plain.filter((b) => b.explicit).flatMap((b) => b.names);
+  const g = "ps_g";
+  const piType = `${parts.binders.map((b) => `${b} → `).join("")}${parts.type}`;
+  const all = plain.map((b) => b.text).join(" ");
+  const forall = (s: string) => (all === "" ? s : `∀ ${all}, ${s}`);
+  const source =
+    `theorem ${f}.ps_unique (${g} : ${piType})\n` +
+    `    (hg : ${forall(`${g}${args.map((a) => ` ${a}`).join("")} = (\n${body.replace(selfRef(f), g)})`)}) :\n` +
+    `    ${forall(`${g}${args.map((a) => ` ${a}`).join("")} = ${f}${args.map((a) => ` ${a}`).join("")}`)} := by\n` +
+    `  ${plain.length === 0 ? "" : `intro ${plain.flatMap((b) => b.names).join(" ")}\n  `}` +
+    `fun_induction ${f}${args.map((a) => ` ${a}`).join("")} <;> rw [hg] <;> clear hg <;> (try simp_all (config := { zetaDelta := true })) <;> (try (intros; omega))`;
+  return { kind: "theorem", aux: "eqn", tsName: `${def.tsName} (uniqueness)`, leanName: `${f}.ps_unique`, node: def.node, source, deps: new Set([f, ...def.deps]) };
+}
+
+/** The declarations, each definition followed by its equation (and uniqueness, if recursive). */
 export function withEquations(decls: readonly GeneratedDecl[]): GeneratedDecl[] {
   return decls.flatMap((d) => {
     if (d.kind !== "def") return [d];
+    const out = [d];
     const e = equationDecl(d);
-    return e === undefined ? [d] : [d, e];
+    if (e !== undefined) out.push(e);
+    const u = uniquenessDecl(d);
+    if (u !== undefined) out.push(u);
+    return out;
   });
 }
 
@@ -148,6 +192,9 @@ const kinds = (bs: readonly { implicit: boolean }[]) => bs.map((b) => (b.implici
 function constantsOf(es: readonly Expr[], out: Set<Name>): void {
   for (const e of es) {
     visit(e, (s) => {
+      // A hole stands for a proof (or an autoParam's tactic): what it is typed by is checked
+      // where it is used, and carries no meaning of its own.
+      if (s.kind === "app" && getAppFn(s).kind === "const" && (getAppFn(s) as { name: Name }).name === HOLE) return false;
       if (s.kind === "const") out.add(s.name);
       if (s.kind === "proj") out.add(s.typeName);
       return true;
@@ -237,8 +284,25 @@ class Binder {
       const rhs = body.kind === "app" ? body.arg : body;
       const self = new Set<Name>();
       constantsOf([rhs], self);
-      if (self.has(kname(n))) this.recursive.add(n);
       used.push(t, e);
+      if (self.has(kname(n))) {
+        // The equation determines a recursive function only if it terminates: shown by its
+        // uniqueness theorem, when Lean could prove it. Otherwise it stays an assumption.
+        const uq = this.#own.get(`${n}.ps_unique`);
+        let bound = false;
+        if (uq?.decl !== undefined && uq.decl.k === "theorem") {
+          try {
+            const u = this.#elaborator().signature(uq.decl);
+            if (this.#sameType(`${n}.ps_unique`, u, "theorem") === true) {
+              used.push(u);
+              bound = true;
+            }
+          } catch (err) {
+            if (!(err instanceof ElabError || err instanceof KernelError)) throw err;
+          }
+        }
+        if (!bound) this.recursive.add(n);
+      }
     } else {
       const { type, ctors } = this.#elaborator().inductive(d);
       const c = this.#env.get(kname(n));

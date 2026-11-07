@@ -35,7 +35,7 @@ export function pred(n: nat & Ge<1>): nat & Lt<typeof n> {
 - [Roadmap](docs/design/03-roadmap.md)
 - [Surface syntax: ProofScript is written in TypeScript](docs/design/04-surface-syntax.md), with [working examples](docs/design/typescript-only/)
 - [Lean correspondence](docs/design/05-lean-correspondence.md): how each Lean 4 feature is written in ProofScript
-- [Decision log](docs/design/06-decision-log.md): every decision so far, with the alternatives considered
+- [Decision log](docs/design/06-decision-log.md): every decision so far, with the alternatives considered; [review queue](docs/review-queue.md): the ones awaiting review
 - [Implementation plan and evidence strategy](docs/design/07-implementation-plan.md)
 - [Lean's elaborator in WebAssembly](docs/design/08-lean-in-wasm.md): the planned replacement for the Lean dependency
 - Research: [why TypeScript won](docs/research/01-typescript-success-principles.md), [verification prior art](docs/research/02-verification-prior-art.md), [foundations and soundness](docs/research/03-foundations-and-soundness.md), [syntax and tooling](docs/research/04-syntax-and-tooling.md)

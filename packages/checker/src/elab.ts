@@ -505,7 +505,9 @@ export class Elaborator {
       if (i === bs.length) return k();
       const b = bs[i]!;
       if (b.type === undefined) throw new ElabError(`binder ${b.name} needs a type`);
-      const ty = this.type(b.type);
+      let ty = this.type(b.type);
+      // A binder with a tactic default is an autoParam: callers may omit the proof.
+      if (b.auto && kind === "pi") ty = this.#autoParam(ty);
       const fv = fvar(kname(b.name), ty);
       fvs.push({ fv, implicit: b.implicit });
       return this.#withLocal(b.name, fv, () => go(i + 1));
@@ -551,6 +553,12 @@ export class Elaborator {
     const e = app(constant(HOLE, [lv]), type);
     this.unifyLevel(lv, this.#sortLevel(type));
     return e;
+  }
+
+  /** `autoParam T _`: the tactic is irrelevant to meaning (autoParam unfolds to `T`). */
+  #autoParam(t: Expr): Expr {
+    const stx = this.#c("Lean.Syntax");
+    return this.#apply(this.#c("autoParam"), [], undefined, [t, this.#hole(stx)], true);
   }
 
   #sortLevel(type: Expr): Level {
@@ -636,7 +644,8 @@ export class Elaborator {
         return this.#apply(this.#c("List.toArray"), [], expected, [list]);
       }
       case "forall":
-        return this.binders(t.binders, "pi", () => this.elab(t.body, sort(zero)));
+        // `∀ x, P` in a statement, or a dependent arrow `(x : A) → B` between types.
+        return this.binders(t.binders, "pi", () => this.type(t.body));
       case "exists": {
         if (t.binders.length !== 1) return this.#elab({ ...t, binders: t.binders.slice(0, 1), body: { k: "exists", binders: t.binders.slice(1), body: t.body } }, expected);
         const f = this.binders(t.binders, "lam", () => this.elab(t.body, sort(zero)));

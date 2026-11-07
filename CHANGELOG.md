@@ -2,6 +2,12 @@
 
 ProofScript ships patch releases (0.0.x) until the 0.1.0 MVP. See [docs/v0.1.md](docs/v0.1.md).
 
+## 0.0.9 (2026-11-07)
+
+- **Certificates establish termination.** Every recursive function (including every loop) now also has a uniqueness theorem: any function satisfying its equation equals it. Lean proves it along the function's own recursion when the certificate is made, and ProofScript binds it like every other statement. Results checked from certificates no longer list "terminates (proved by Lean when the certificate was made)", unless Lean could not prove one. All examples and fixtures are covered.
+- **Elaborator:** dependent arrow types (`(x : A) → B`, with implicit binders and tactic defaults) and `∀ {T : Type} …` binders.
+- **Decision log D34–D40**, and a [review queue](docs/review-queue.md) of the decisions that need Jordan's review before 0.1.0.
+
 ## 0.0.8 (2026-11-07)
 
 - **`examples/base64`:** a verified drop-in replacement for base64-js 1.5.1 (`byteLength`, `toByteArray`, `fromByteArray`).

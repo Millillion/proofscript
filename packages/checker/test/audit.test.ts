@@ -16,7 +16,7 @@ test("audit of examples/math (from its certificate): axioms, translations, assum
   assert.equal(a.result.theorems.filter((t) => t.status === "verified").length, a.result.theorems.length);
   assert.deepEqual(Object.keys(a.axioms).sort(), ["Classical.choice", "Quot.sound", "propext"]);
   assert.ok(a.reflected.reverse!.includes("reverse_reverse"));
-  assert.ok(a.assumptions["reverse terminates (proved by Lean when the certificate was made)"]!.includes("reverse_reverse"));
+  assert.ok(Object.keys(a.assumptions).every((k) => !/terminate/.test(k)), "termination is established by the certificate");
   assert.ok(a.assumptions["recursion depth below 2^30"]!.length > 0);
   // Exported functions with preconditions are the project's boundary; every internal call is checked.
   assert.deepEqual(a.boundary.map((b) => [b.kind, b.fn]), [["export", "replicate"], ["export", "zip"], ["export", "get"]]);
