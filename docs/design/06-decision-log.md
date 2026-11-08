@@ -252,4 +252,9 @@ When a decision changes, update its entry and note the date rather than deleting
 ### D43. Specification predicates — **Proposed, pending review** (2026-11-07)
 - A `boolean` function whose single-expression body uses `forall`/`exists` is a proposition in the logic and cannot be called from running code. See [09-specifications.md](09-specifications.md) for the alternatives (a `Spec` marker, indexed `every`, ghost code).
 
+### D44. Instantiating quantified hypotheses — **Open, for review** (2026-11-07)
+- Composing two quantified facts (the encoder's `encodedGroups` and the decoder's `decodedGroups`) into one whole-array theorem needs each hypothesis instantiated at the group in question. `grind` does not find these instances (measured on a pure Lean prototype: it fails with the hypotheses curried or not, while `have := enc h (by omega)` for each one succeeds).
+- The TypeScript surface has no way to name and instantiate a hypothesis. Options: (a) a `have(statement, tactic)` tactic, with intro'd names bound by a callback as `induction` does; (b) `specialize(name, …args)` with string names, as `intro` uses; (c) automation that instantiates every quantified hypothesis at the goal's index terms before `grind`. (c) adds no syntax but is a heuristic; (a) is the most TypeScript-like.
+- 0.0.11 ships the composition per group (`group_decodes`: decoding the units the encoder writes for any three bytes gives them back), which needs none of this. The whole-array statement waits for this decision.
+
 Group C (D6–D16, surface syntax) stays **Default** until the syntax review at the end of M3 (D29).

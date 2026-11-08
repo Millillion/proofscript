@@ -702,8 +702,15 @@ export class Elaborator {
         return letE(fv.name, this.inst(vty), this.inst(v), abstract(this.inst(body), [fv]));
       }
       case "have": {
-        const ty = this.elab(t.type, sort(zero));
-        const v = this.#hole(ty);
+        let ty: Expr;
+        let v: Expr;
+        if (t.type === undefined) {
+          v = this.elab(t.value!, undefined);
+          ty = this.infer(v);
+        } else {
+          ty = this.elab(t.type, sort(zero));
+          v = this.#hole(ty);
+        }
         const fv = fvar(kname(t.name), ty, v);
         const body = this.#withLocal(t.name, fv, () => this.elab(t.body, expected));
         this.#solvePending(false);

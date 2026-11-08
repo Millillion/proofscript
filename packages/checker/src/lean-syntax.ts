@@ -26,7 +26,7 @@ export type Term =
   | { readonly k: "if"; readonly h: string | undefined; readonly cond: Term; readonly then: Term; readonly else: Term }
   | { readonly k: "match"; readonly discr: Term; readonly alts: readonly MatchAlt[] }
   | { readonly k: "let"; readonly names: readonly string[]; readonly type: Term | undefined; readonly value: Term; readonly body: Term }
-  | { readonly k: "have"; readonly name: string; readonly type: Term; readonly body: Term }
+  | { readonly k: "have"; readonly name: string; readonly type: Term | undefined; readonly value: Term | undefined; readonly body: Term }
   | { readonly k: "by" }
   | { readonly k: "sort"; readonly which: "Type" | "Prop" };
 
@@ -452,11 +452,17 @@ class Parser {
   have(): Term {
     this.next();
     const name = this.ident();
-    this.expect(":");
+    // With a type, the proof is irrelevant; without one, the type is the proof's.
+    if (!this.at(":")) {
+      this.expect(":=");
+      const value = this.term();
+      return { k: "have", name, type: undefined, value, body: this.continuation() };
+    }
+    this.next();
     const type = this.term();
     this.expect(":=");
     this.term(); // the proof
-    return { k: "have", name, type, body: this.continuation() };
+    return { k: "have", name, type, value: undefined, body: this.continuation() };
   }
 
   /** Can the current token start an argument of an application? */

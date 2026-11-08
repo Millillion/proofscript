@@ -6,6 +6,7 @@ Decisions with major trade-offs, large dependencies, architecture, developer-fac
 
 - **D6–D16, D29: the whole surface syntax** (`nat`, refinements `Lt<…>`, `Is<typeof p, […]>`, `satisfies` invariants, `prove`/`by`, tactic names). The syntax review against `examples/math`, `examples/tutorial` and `examples/base64`.
 - **D43: specification predicates** (`forall` in a boolean function makes it a proposition that cannot run). [Design](design/09-specifications.md). Syntax-level.
+- **D44: instantiating quantified hypotheses** in tactic proofs (`have`, `specialize`, or automatic). Needed for the whole-array base64 round trip. Syntax-level.
 - **D35: bit operations.** Which operators, and with which obligations.
 - **D36: predicates are stated by their bodies.** Affects what error messages show.
 - **D37: modular automation.** Contracts become API: a proof can't see past a callee's postconditions.

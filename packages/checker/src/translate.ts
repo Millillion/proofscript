@@ -932,6 +932,9 @@ export class Translator {
     // Proof arguments come after all value parameters, so calls stay positional.
     binders.push(...hypBinders);
     const savedHyps = this.#scopeHyps;
+    // A callee translated while its caller collects side conditions keeps its own.
+    const savedGuards = this.#guards;
+    this.#guards = undefined;
     const savedPasses = this.#passesStringFacts;
     this.#passesStringFacts = false;
     this.#scopeHyps = hypBinders.map((b) => /^\((\S+) :/.exec(b)?.[1]).filter((n): n is string => n !== undefined);
@@ -989,6 +992,7 @@ export class Translator {
       // A callee translated on the way does not make this function's caller guarded.
       this.#guardCount = guardsBefore;
       this.#scopeHyps = savedHyps;
+      this.#guards = savedGuards;
       this.#passesStringFacts = savedPasses;
     }
     const recursive = deps.has(leanName);
@@ -1143,10 +1147,17 @@ export class Translator {
           const lset = [...unfold, ...lemmas];
           const ls = lset.length === 0 ? "" : ` [${lset.join(", ")}]`;
           const induct = `fun_induction ${l.name}${l.args.map((a) => ` ${a}`).join("")}`;
-          // A quantified postcondition (about arrays): each case is the induction hypothesis,
-          // or the exit, where the array tactic relates the last writes to the invariant.
+          // A quantified postcondition (about arrays). `fun_induction` may leave the helper
+          // folded (its proof arguments differ), so it is unfolded once and its `if` decided by
+          // the case's hypothesis. Then each case is the induction hypothesis, or the exit,
+          // where the invariant at the final counter instantiates to the postcondition. These
+          // are cheap, so tried first (the heartbeat budget is shared); then the array tactic
+          // relates the last writes to the invariant.
+          const specs = this.#specNames.size === 0 ? "" : `(try simp only [${[...this.#specNames].join(", ")}] at *); `;
+          const exit = `(${specs}intros; (apply_assumption <;> omega); done)`;
+          const unfoldOnce = `(unfold ${l.name}; simp (disch := first | exact eq_true (by assumption) | exact eq_false (by assumption)) only [dite_cond_eq_true, dite_cond_eq_false]; first | assumption | ${exit})`;
           const ltac = this.#quantified(lprop)
-            ? `${induct} <;> first | assumption | (simp_all${ls}; done) | ${arraysTactic(unfold.filter((d) => !this.#isLoopHelper(d)), [...this.#specNames])}`
+            ? `${induct} <;> first | assumption | ${exit} | ${unfoldOnce} | (simp_all; done) | ${arraysTactic(unfold.filter((d) => !this.#isLoopHelper(d)), [...this.#specNames])}`
             : `${induct} <;> (try simp_all${ls}) <;> (try simp (config := { zetaDelta := true })${ls}) <;> (try omega) <;> (try grind)`;
           const lbudget = this.#quantified(lprop) ? "set_option maxHeartbeats 1000000 in\n" : "";
           const lsource = `${lbudget}@[simp] theorem ${lname}${l.binders.map((b) => ` ${b}`).join("")} :\n    ${lprop} := by\n  ${ltac}`;
@@ -1668,7 +1679,14 @@ export class Translator {
       return n;
     });
     if (bind !== undefined) s2 = withLocal(s2, bind.sym, bind.name, bind.ty);
-    return `${g.haves}let (${[res, ...newNames].join(", ")}) := ${g.text}\n${rest(s2)}`;
+    // The callee's proved postconditions, as facts about this call's result (modular).
+    const ln = /^\((\S+)/.exec(g.text)?.[1];
+    const lemmas = ln === undefined ? [] : [...this.decls.values()].map((d) => d.leanName).filter((n) => new RegExp(`^${ln.replace(/[.]/g, "\\.")}\\.post_\\d+$`).test(n));
+    for (const l of lemmas) deps.add(l);
+    const facts = lemmas.map((l) => `have _ := ${g.text.replace(ln!, l)}\n`).join("");
+    const r = this.freshVar("ps_call");
+    const proj = [res, ...newNames].map((n, j) => `let ${n} := ${r}${j === 0 ? ".1" : stateProj(j - 1, newNames.length)}\n`).join("");
+    return `${g.haves}let ${r} := ${g.text}\n${facts}${proj}${rest(s2)}`;
   }
 
   /** Lean type for a local whose type TypeScript inferred. */
@@ -1771,7 +1789,18 @@ export class Translator {
         measure = this.expr(se.expression, "value", inner, deps);
       }
       const pd = new Set<string>();
-      for (const p of this.satisfiesProps(se, inner, pd)) invariants.push({ p, pd });
+      // `Old<typeof a>` in an invariant: the modified argument's value on entry to the function.
+      const savedOld = this.#postOld;
+      this.#postOld = new Map(fn.mods.flatMap((m) => {
+        const k = fn.oldKeys.get(m);
+        const l = k === undefined ? undefined : inner.locals.get(k);
+        return l === undefined ? [] : [[m, l] as const];
+      }));
+      try {
+        for (const p of this.satisfiesProps(se, inner, pd)) invariants.push({ p, pd });
+      } finally {
+        this.#postOld = savedOld;
+      }
       for (const d of pd) deps.add(d);
     }
     const call = (s: Scope): string => `(${name}${params.map((p) => ` ${s.locals.get(p.sym)!}`).join("")})`;

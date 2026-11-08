@@ -2,6 +2,21 @@
 
 ProofScript ships patch releases (0.0.x) until the 0.1.0 MVP. See [docs/v0.1.md](docs/v0.1.md).
 
+## 0.0.11 (2026-11-07)
+
+- **base64 decoder specifications.** The decoder is split like the encoder (`decodeGroups`, `decodeTail`). Its loop proves `decodedGroups`: every byte of every complete group is decoded from that group's four characters. The encoder proves `encodedWholeGroups` for every whole group. Both are proved automatically.
+- **The round trip per group:** `group_decodes` proves that decoding the units the encoder writes for any three bytes gives back those bytes. The whole-array theorem needs a way to instantiate quantified hypotheses in proofs. That is a syntax decision, recorded as **D44** in the [review queue](docs/review-queue.md); it is planned for 0.0.12.
+- **Translator:**
+  - `Old<…>` is allowed in loop invariants.
+  - Calls that modify their arguments now pass on the callee's postconditions.
+  - Each function's guards stay its own (a callee's guards no longer leak into its caller).
+  - Quantified loop postconditions try cheap steps first: the helper unfolded once, then the induction hypothesis, or at the exit the invariant at the final counter. The heartbeat budget is shared, so order matters.
+- **Checker:** the kernel's dependency walk is memoized (a check that took more than 25 minutes in footprinting now takes seconds). `PROOFSCRIPT_TIMING=1` prints the time spent in each stage.
+- **Certificates:** the elaborator accepts `have x := proof` without a type (callee facts after modifying calls).
+- **Known gap:** base64's `encodeTail` and `decodeTail`, and `encodeInto`/`decodeInto` which call them, are not covered by the certificate. Lean fails to restate their equations (see [certificates](docs/certificates.md#known-gaps)); they are checked with Lean. To be fixed in 0.0.12.
+- Checked from the certificate, 12 base64 results list termination of the two large loops as an assumption (`terminates (proved by Lean when the certificate was made)`): their bodies exceed the uniqueness-theorem size limit (D42).
+- 67/67 tests pass. base64: 32/32 theorems verified.
+
 ## 0.0.10 (2026-11-07)
 
 - **Specification predicates (D43):** a boolean function whose body uses `forall`/`exists` (directly or through another one) is a proposition in the logic. It describes whole arrays in postconditions, loop invariants and theorems, and calling it from running code is an error. See the [reference](docs/reference.md#specification-predicates) and the [design](docs/design/09-specifications.md).

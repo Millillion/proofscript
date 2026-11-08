@@ -11,7 +11,7 @@ A verified drop-in replacement for [base64-js](https://github.com/beatgammit/bas
 
 ## What is proved
 
-`proofscript check` verifies 19 theorems and every function in `alphabet.ts`, `group.ts` and `base64.ts`:
+`proofscript check` verifies 32 theorems and every function in `alphabet.ts`, `group.ts`, `base64.ts` and `roundtrip.ts`:
 
 - **Safety.** Every array and string access is in bounds, and every write lands inside the output buffer. No arithmetic overflows. Shifts and masks keep JavaScript's meaning: `x & 0xFF` is `x mod 256` for any safe integer.
 - **Ranges.** Every encoded unit is an ASCII code of the alphabet (below 128), every decoded value a byte (below 256), every sextet below 64.
@@ -20,8 +20,10 @@ A verified drop-in replacement for [base64-js](https://github.com/beatgammit/bas
   - `decode_encode_unit`: every sextet survives the alphabet.
   - `group_round_trip`, `pair_round_trip`, `single_round_trip`: the sextets of any three bytes (or the padded one or two) decode back to those bytes.
   - `encode_unit_not_padding`: the alphabet never produces `=`, so the decoder finds the padding where the encoder put it.
+  - `group_decodes`: decoding the units the encoder writes for any three bytes gives back those bytes (the composition, per group).
+- **Whole-array specifications.** The encoder's loop proves `encodedWholeGroups`: every unit of every whole group is the right sextet's character. The decoder's loop proves `decodedGroups`: every byte of every complete group is decoded from its group's four characters. Both are quantified postconditions (specification predicates), maintained by loop invariants.
 
-  The loop invariants prove where each group's units and bytes go: four units and three bytes per group, at matching offsets. The whole-array statement `toByteArray(fromByteArray(x)) = x` composes these facts. It is tested (below) but **not yet one theorem**.
+  The whole-array statement `toByteArray(fromByteArray(x)) = x` instantiates these two postconditions at each group and applies `group_decodes`. It is tested (below) but **not yet one theorem**: ProofScript has no tactic yet to instantiate a quantified hypothesis (decision D44, open).
 
 ## What is tested
 

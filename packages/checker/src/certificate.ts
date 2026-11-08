@@ -122,7 +122,9 @@ export function equationDecl(def: GeneratedDecl): GeneratedDecl | undefined {
 
 /** Callee facts are proofs: equations (statements) leave them out. */
 function withoutFacts(body: string): string {
-  return body.replace(/^[ \t]*have _ : [^\n]*:= \(PS\.\S+\.post_\d+[^()\n]*\)\n/gm, "");
+  return body
+    .replace(/^[ \t]*have _ : [^\n]*:= \(PS\.\S+\.post_\d+[^()\n]*\)\n/gm, "")
+    .replace(/^[ \t]*have _ := \(PS\.\S+\.post_\d+[^\n]*\n/gm, "");
 }
 
 /** Occurrences of the name `f` itself (not `f.post_0`, not a longer name). */

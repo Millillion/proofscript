@@ -1,7 +1,7 @@
 // Base64 encoding and decoding with base64-js's behaviour, verified: every array access is
 // in bounds, no arithmetic overflows, every output byte is a byte, and the output lengths
 // are exact.
-import { forall, implies, type Decreases, type Holds, type Is, type Le, type Modifies, type int, type nat } from "proofscript";
+import { forall, implies, type Decreases, type Holds, type Is, type Le, type Modifies, type Old, type int, type nat } from "proofscript";
 import { decodeUnit, encodeUnit } from "./alphabet.ts";
 import { byte0, byte1, byte2, sextet0, sextet1, sextet2, sextet3, sextetAt } from "./group.ts";
 
@@ -43,6 +43,30 @@ export function multipleOf4(i: nat): boolean {
  * does for whole groups.
  */
 export function encodeInto(bytes: readonly int[], out: nat[] & Is<typeof holdsEncoded, [typeof bytes]>): void & Modifies<typeof out> {
+  encodeGroups(bytes, out);
+  encodeTail(bytes, out);
+}
+
+/** In-place writes keep an array's length. */
+export function sameSize(a: readonly nat[], b: readonly nat[]): boolean {
+  return a.length === b.length;
+}
+
+/** Every whole group of three bytes is encoded. */
+export function encodedWholeGroups(out: readonly nat[], bytes: readonly int[]): boolean {
+  return encodedGroups(out, bytes, Math.floor(bytes.length / 3));
+}
+
+/** The whole groups: four units per three bytes. */
+export function encodeGroups(
+  bytes: readonly int[],
+  out: nat[] & Is<typeof holdsEncoded, [typeof bytes]>,
+):
+  & void
+  & Modifies<typeof out>
+  & Holds<typeof encodedWholeGroups, [typeof out, typeof bytes]>
+  & Holds<typeof holdsEncoded, [typeof out, typeof bytes]>
+  & Holds<typeof sameSize, [typeof out, Old<typeof out>]> {
   const n = bytes.length;
   const groups = Math.floor(n / 3);
   let g = 0;
@@ -52,6 +76,7 @@ export function encodeInto(bytes: readonly int[], out: nat[] & Is<typeof holdsEn
     n satisfies Is<typeof isLength, [typeof bytes]>;
     out satisfies Is<typeof holdsEncoded, [typeof bytes]>;
     out satisfies Holds<typeof encodedGroups, [typeof out, typeof bytes, typeof g]>;
+    out satisfies Holds<typeof sameSize, [typeof out, Old<typeof out>]>;
     groups - g satisfies Decreases;
     const a = bytes[3 * g] & 0xff;
     const b = bytes[3 * g + 1] & 0xff;
@@ -62,6 +87,12 @@ export function encodeInto(bytes: readonly int[], out: nat[] & Is<typeof holdsEn
     out[4 * g + 3] = encodeUnit(sextet3(c));
     g = g + 1;
   }
+}
+
+/** The last, incomplete group (one or two bytes), padded with `=`. */
+export function encodeTail(bytes: readonly int[], out: nat[] & Is<typeof holdsEncoded, [typeof bytes]>): void & Modifies<typeof out> {
+  const n = bytes.length;
+  const groups = Math.floor(n / 3);
   const j = 4 * groups;
   const full = 3 * groups;
   if (n - full === 1) {
@@ -142,35 +173,79 @@ export function isPadding(p: nat, s: string): boolean {
   return p === padding(s);
 }
 
+/** `count` is the number of complete groups base64-js decodes in its main loop. */
+export function isGroupCount(count: nat, s: string): boolean {
+  return count === Math.floor(groupsEnd(s) / 4);
+}
+
+/** `count` groups of four characters fit in `s`. */
+export function fitsIn(count: nat, s: string): boolean {
+  return count <= Math.floor(s.length / 4);
+}
+
+/** The first `g` groups of four characters are decoded: bytes `3h` to `3h + 2` from group `h`. */
+export function decodedGroups(out: readonly nat[], s: string, g: nat): boolean {
+  return forall((h: nat) =>
+    implies(
+      h < g && 3 * h + 2 < out.length && 4 * h + 3 < s.length,
+      out[3 * h] === byte0(decodeUnit(s.charCodeAt(4 * h)), decodeUnit(s.charCodeAt(4 * h + 1))) &&
+        out[3 * h + 1] === byte1(decodeUnit(s.charCodeAt(4 * h + 1)), decodeUnit(s.charCodeAt(4 * h + 2))) &&
+        out[3 * h + 2] === byte2(decodeUnit(s.charCodeAt(4 * h + 2)), decodeUnit(s.charCodeAt(4 * h + 3))),
+    ),
+  );
+}
+
 /**
  * base64-js's `toByteArray`, writing into `out` (at least `written(s)` long): in place, so
  * that a `Uint8Array` is filled without copies. Bytes not written keep their value.
  */
 export function decodeInto(s: string & Is<typeof hasLengthMultipleOf4>, out: nat[] & Is<typeof holdsDecoded, [typeof s]>): void & Modifies<typeof out> {
   const end = groupsEnd(s);
-  const pad = padding(s);
-  let i = 0;
-  let k = 0;
-  while (i < end) {
-    i satisfies Le<typeof end> & Is<typeof multipleOf4>;
-    end satisfies Le<typeof s.length> & Is<typeof multipleOf4> & Is<typeof isGroupsEnd, [typeof s]>;
-    pad satisfies Is<typeof isPadding, [typeof s]>;
+  const count = Math.floor(end / 4);
+  decodeGroups(s, out, count);
+  decodeTail(s, out, count);
+}
+
+/** The complete groups: three bytes per four characters. */
+export function decodeGroups(
+  s: string,
+  out: nat[] & Is<typeof holdsDecoded, [typeof s]>,
+  count: nat & Is<typeof isGroupCount, [typeof s]> & Is<typeof fitsIn, [typeof s]>,
+):
+  & void
+  & Modifies<typeof out>
+  & Holds<typeof decodedGroups, [typeof out, typeof s, typeof count]>
+  & Holds<typeof holdsDecoded, [typeof out, typeof s]>
+  & Holds<typeof sameSize, [typeof out, Old<typeof out>]> {
+  let h = 0;
+  while (h < count) {
+    h satisfies Le<typeof count>;
+    count satisfies Is<typeof isGroupCount, [typeof s]> & Is<typeof fitsIn, [typeof s]>;
     out satisfies Is<typeof holdsDecoded, [typeof s]>;
-    k satisfies Is<typeof threeQuarters, [typeof i]>;
-    end - i satisfies Decreases;
-    const s0 = decodeUnit(s.charCodeAt(i));
-    const s1 = decodeUnit(s.charCodeAt(i + 1));
-    const s2 = decodeUnit(s.charCodeAt(i + 2));
-    const s3 = decodeUnit(s.charCodeAt(i + 3));
-    out[k] = byte0(s0, s1);
-    out[k + 1] = byte1(s1, s2);
-    out[k + 2] = byte2(s2, s3);
-    i = i + 4;
-    k = k + 3;
+    out satisfies Holds<typeof decodedGroups, [typeof out, typeof s, typeof h]>;
+    out satisfies Holds<typeof sameSize, [typeof out, Old<typeof out>]>;
+    count - h satisfies Decreases;
+    const s0 = decodeUnit(s.charCodeAt(4 * h));
+    const s1 = decodeUnit(s.charCodeAt(4 * h + 1));
+    const s2 = decodeUnit(s.charCodeAt(4 * h + 2));
+    const s3 = decodeUnit(s.charCodeAt(4 * h + 3));
+    out[3 * h] = byte0(s0, s1);
+    out[3 * h + 1] = byte1(s1, s2);
+    out[3 * h + 2] = byte2(s2, s3);
+    h = h + 1;
   }
-  // The padded last group. base64-js reads it at the loop's end; its characters are always
-  // there, and the bytes fit (the checks never fail). Were a check to fail, base64-js would
-  // read NaN, decode 0 and write the 0 that `out` already holds.
+}
+
+/**
+ * The padded last group. base64-js reads it where its main loop stops; its characters are
+ * always there, and the bytes fit (the checks never fail). Were a check to fail, base64-js
+ * would read NaN, decode 0 and write the 0 that `out` already holds.
+ */
+export function decodeTail(s: string, out: nat[], count: nat): void & Modifies<typeof out> {
+  const pad = padding(s);
+  if (count > 2251799813685247) return;
+  const i = 4 * count;
+  const k = 3 * count;
   if (pad === 2 && s.length >= 2) {
     if (i <= s.length - 2 && k < out.length) {
       const s0 = decodeUnit(s.charCodeAt(i));

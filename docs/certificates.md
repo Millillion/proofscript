@@ -37,6 +37,10 @@ nat.ts:4:1: error: theorem add_comm is not covered by the certificate (the certi
 - The elaborator, for the meaning of generated statements. It is small and deliberately incomplete: whatever it cannot elaborate is not bound.
 - Nothing about termination. An equation like `length xs = match xs with … 1 + length tail` determines `length` only because the recursion terminates. So for every recursive function the certificate also carries a uniqueness theorem: any `g` satisfying the same equation equals `length`. Lean proves it by induction along the function's own recursion; ProofScript elaborates its statement and binds it like the others. If Lean could not prove one, the result lists `f terminates (proved by Lean when the certificate was made)` as an assumption instead.
 
+## Known gaps
+
+- An equation Lean cannot elaborate leaves its definition not covered: replay reports `definition f is not covered by the certificate; check with Lean`, and results that depend on `f` are checked only with Lean. In `examples/base64`, `encodeTail` and `decodeTail` (a chain of `Array.set` on a parameter) hit a Lean failure ("unknown free variable") when their equations are restated, which also leaves `encodeInto` and `decodeInto`, which call them, uncovered. The 32 theorems still replay. To be fixed in 0.0.12.
+
 ## Evidence
 
 `packages/checker/test/certificate.test.ts`:

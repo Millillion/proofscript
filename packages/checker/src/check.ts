@@ -1,7 +1,7 @@
 // `proofscript check`: translate, prove with Lean (untrusted), check with the kernel.
 
 import { join, relative } from "node:path";
-import { type ConstantInfo, type Expr, Kernel, KernelError, name as kname, nameToString, parseExport, visit } from "@proofscript/kernel";
+import { type ConstantInfo, type Expr, Kernel, KernelError, type Name, name as kname, nameToString, parseExport } from "@proofscript/kernel";
 import { withEquations, writeCertificate } from "./certificate.ts";
 import { buildLean, exportDecls } from "./lean.ts";
 import { type Project, loadProject } from "./project.ts";
@@ -44,7 +44,15 @@ export function check(target: string | readonly string[], opts: CheckOptions = {
   return checkProject(project, opts.workDir ?? join(project.rootDir, ".proofscript", "lean"), opts);
 }
 
+/** `PROOFSCRIPT_TIMING=1`: report how long each stage takes (on stderr). */
+function stage(name: string, t0: number): number {
+  const t = Date.now();
+  if (process.env.PROOFSCRIPT_TIMING !== undefined) console.error(`[timing] ${name}: ${((t - t0) / 1000).toFixed(1)}s`);
+  return t;
+}
+
 export function checkProject(project: Project, workDir: string, opts: CheckOptions = {}): CheckResult {
+  let t = Date.now();
   const files = project.program.getSourceFiles().filter((f) => !f.isDeclarationFile && !/node_modules/.test(f.fileName));
   const tr = new Translator(project);
   const translation = tr.translateFiles(files);
@@ -58,8 +66,10 @@ export function checkProject(project: Project, workDir: string, opts: CheckOptio
   // checked even when there are no theorems.
   if (decls.length === 0) return { diagnostics, unverified, theorems: [], declarationsChecked: 0 };
 
+  t = stage("translate", t);
   // 1. Prove with Lean (untrusted).
   let build = buildLean(workDir, decls);
+  t = stage("lean", t);
   const failed = new Set<GeneratedDecl>();
   if (!build.ok) {
     const starts = [...build.lines.entries()].sort((a, b) => a[1] - b[1]);
@@ -91,6 +101,7 @@ export function checkProject(project: Project, workDir: string, opts: CheckOptio
     const failedResults = theorems.filter((t) => dead.has(t)).map((t) => ({ ...base(t, pos), status: "failed" as const, axioms: [], reflected: [], assumptions: [] }));
     if (alive.length === 0) return { diagnostics, unverified, theorems: failedResults, declarationsChecked: 0 };
     build = buildLean(workDir, alive);
+    t = stage("lean (second pass)", t);
     if (!build.ok) {
       diagnostics.push({ file: "", line: 0, column: 0, message: "Lean failed on declarations that did not fail on their own; nothing could be checked" });
       return { diagnostics, unverified, theorems: theorems.map((t) => ({ ...base(t, pos), status: "failed" as const, axioms: [], reflected: [], assumptions: [] })), declarationsChecked: 0 };
@@ -101,6 +112,7 @@ export function checkProject(project: Project, workDir: string, opts: CheckOptio
   // Every surviving definition and theorem goes through the kernel.
   const checked = decls.filter((d) => !failed.has(d));
   const text = exportDecls(workDir, checked.map((d) => d.leanName));
+  t = stage(`export (${(text.length / 1e6).toFixed(1)} MB)`, t);
   const kernel = new Kernel();
   let count = 0;
   try {
@@ -109,6 +121,7 @@ export function checkProject(project: Project, workDir: string, opts: CheckOptio
       count++;
     }
     kernel.finish();
+    t = stage("kernel", t);
   } catch (e) {
     if (!(e instanceof KernelError)) throw e;
     diagnostics.push({ file: "", line: 0, column: 0, message: `the ProofScript kernel rejected the proof terms Lean produced: ${e.message}` });
@@ -156,30 +169,57 @@ function base(t: GeneratedDecl, pos: (d: GeneratedDecl) => Diagnostic) {
   return { tsName: t.tsName, file: p.file, line: p.line, leanName: t.leanName };
 }
 
+/** The constants a constant mentions directly, computed once per constant (shared subterms once). */
+const directDeps = new WeakMap<ConstantInfo, readonly Name[]>();
+function depsOf(c: ConstantInfo): readonly Name[] {
+  const hit = directDeps.get(c);
+  if (hit !== undefined) return hit;
+  const out = new Set<Name>();
+  const seen = new Set<Expr>();
+  const stack: Expr[] = [c.type];
+  if ("value" in c) stack.push(c.value);
+  if (c.kind === "recursor") for (const r of c.rules) stack.push(r.rhs);
+  while (stack.length > 0) {
+    const e = stack.pop()!;
+    if (seen.has(e)) continue;
+    seen.add(e);
+    switch (e.kind) {
+      case "const":
+        out.add(e.name);
+        break;
+      case "app":
+        stack.push(e.fn, e.arg);
+        break;
+      case "lam":
+      case "pi":
+        stack.push(e.binderType, e.body);
+        break;
+      case "let":
+        stack.push(e.binderType, e.value, e.body);
+        break;
+      case "proj":
+        stack.push(e.struct);
+        break;
+      default:
+        break;
+    }
+  }
+  const r = [...out];
+  directDeps.set(c, r);
+  return r;
+}
+
 /** Transitive axioms (Lean's `#print axioms`) and reflected TypeScript functions a constant depends on. */
 export function footprint(
   kernel: Kernel,
   root: ConstantInfo,
   defNames: ReadonlyMap<string, string>,
 ): { axioms: string[]; reflected: string[]; leanDefs: string[] } {
-  const seen = new Set<string>();
+  const seen = new Set<Name>([root.name]);
   const axioms = new Set<string>();
-  const stack: ConstantInfo[] = [root];
-  const push = (e: Expr) =>
-    visit(e, (s) => {
-      if (s.kind === "const") {
-        const n = nameToString(s.name);
-        if (!seen.has(n)) {
-          seen.add(n);
-          const c = kernel.env.get(s.name);
-          if (c !== undefined) stack.push(c);
-        }
-        return false;
-      }
-      return true;
-    });
   const reflected = new Set<string>();
   const leanDefs = new Set<string>();
+  const stack: ConstantInfo[] = [root];
   while (stack.length > 0) {
     const c = stack.pop()!;
     const cn = nameToString(c.name);
@@ -189,9 +229,12 @@ export function footprint(
       leanDefs.add(cn);
     }
     if (c.kind === "axiom") axioms.add(cn === "sorryAx" ? "sorry" : cn);
-    push(c.type);
-    if ("value" in c) push(c.value);
-    if (c.kind === "recursor") for (const r of c.rules) push(r.rhs);
+    for (const d of depsOf(c)) {
+      if (seen.has(d)) continue;
+      seen.add(d);
+      const dc = kernel.env.get(d);
+      if (dc !== undefined) stack.push(dc);
+    }
   }
   return { axioms: [...axioms].sort(), reflected: [...reflected].sort(), leanDefs: [...leanDefs] };
 }
